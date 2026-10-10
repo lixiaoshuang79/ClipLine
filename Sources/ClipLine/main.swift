@@ -10,4 +10,10 @@ if ProcessInfo.processInfo.environment["CLIPLINE_POLICY"] == "regular" {
 } else {
     app.setActivationPolicy(.accessory)
 }
+// 调试：CLIPLINE_APPEARANCE=dark|light 强制外观，便于不改系统设置目测两种模式。
+switch ProcessInfo.processInfo.environment["CLIPLINE_APPEARANCE"] {
+case "dark": app.appearance = NSAppearance(named: .darkAqua)
+case "light": app.appearance = NSAppearance(named: .aqua)
+default: break
+}
 app.run()

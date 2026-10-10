@@ -1,27 +1,13 @@
 import AppKit
 import Combine
-import CryptoKit
-
-struct ClipItem: Identifiable {
-    enum Kind {
-        case text(String)
-        case image(NSImage)      // 缩略图；原图在 snapshot 里
-        case files([String])
-    }
-
-    let id = UUID()
-    let kind: Kind
-    /// 原始剪贴板快照（每项：类型 → 数据），粘贴时原样写回，保真。
-    let snapshot: [[NSPasteboard.PasteboardType: Data]]
-    let fingerprint: String
-    let tilt = Double.random(in: -1.4 ... 1.4)
-}
 
 final class ClipStore: ObservableObject {
     @Published private(set) var items: [ClipItem] = []
     @Published var revealed = false
     @Published var selectedID: UUID?
     @Published var gust = 0
+    /// 上次展开面板之后新进来的卡：下次展开时播放入场高光，播完移除。
+    @Published var freshIDs: Set<UUID> = []
 
     /// 由 AppDelegate 注入：卡片上的动作要走它的收尾逻辑（隐藏面板、合成 ⌘V）。
     var onRequestTuck: (() -> Void)?
@@ -65,11 +51,14 @@ final class ClipStore: ObservableObject {
         if items.first?.fingerprint == item.fingerprint { return }
         items.removeAll { $0.fingerprint == item.fingerprint }
         items.insert(item, at: 0)
+        freshIDs.insert(item.id)
         if items.count > maxItems { items.removeLast(items.count - maxItems) }
+        freshIDs.formIntersection(items.map(\.id))
     }
 
     func remove(_ item: ClipItem) {
         items.removeAll { $0.id == item.id }
+        freshIDs.remove(item.id)
         if selectedID == item.id { selectedID = items.first?.id }
     }
 
@@ -92,23 +81,64 @@ final class ClipStore: ObservableObject {
         lastChangeCount = NSPasteboard.general.changeCount
     }
 
-    // MARK: 演示数据（CLIPLINE_DEMO=1 时注入，便于看形态）
+    // MARK: 演示数据（CLIPLINE_DEMO=1 时注入：覆盖全部卡型与色板分支，便于目测浅色/深色）
 
     func seedDemo() {
+        let now = Date()
+        func app(_ bundleIDs: String...) -> ClipSource {
+            bundleIDs.lazy.compactMap { ClipSource.app(bundleID: $0) }.first ?? .unknown
+        }
+        func text(_ string: String, from source: ClipSource, ago: TimeInterval,
+                  extra: [NSPasteboard.PasteboardType: Data] = [:], title: String? = nil) -> ClipItem {
+            var map = extra
+            map[.string] = Data(string.utf8)
+            return ClipItem(kind: ClipClassifier.kind(for: string, source: source, title: title),
+                            source: source, copiedAt: now - ago, snapshot: [map], fingerprint: "t:" + string)
+        }
+        func files(_ paths: [String], ago: TimeInterval) -> ClipItem? {
+            let existing = paths.filter { FileManager.default.fileExists(atPath: $0) }
+            guard !existing.isEmpty else { return nil }
+            return ClipItem(kind: .files(existing), source: app("com.apple.finder"), copiedAt: now - ago,
+                            snapshot: existing.map { [.fileURL: Data(URL(fileURLWithPath: $0).absoluteString.utf8)] },
+                            fingerprint: "f:" + existing.joined(separator: "|"))
+        }
+
+        let docTitle = "Layout | Apple Developer Documentation"
+        let docURL = "https://developer.apple.com/documentation/swiftui/layout"
         let note = """
         这是 ClipLine 的原型演示：复制过的内容会挂在这根绳上。
 
         点卡片 = 复制并粘贴回你刚才的 App；← → 选择，回车粘贴，Esc 或点空白处收起；悬停时点 × 把它摘下来。
         """
-        let textItem = ClipItem(kind: .text(note),
-                                snapshot: [[.string: Data(note.utf8)]],
-                                fingerprint: "t:demo-note")
-        let calculator = "/System/Applications/Calculator.app"
-        let fileItem = ClipItem(kind: .files([calculator]),
-                                snapshot: [[.fileURL: Data(URL(fileURLWithPath: calculator).absoluteString.utf8)]],
-                                fingerprint: "f:demo-file")
+        let snippet = """
+            func reveal() {
+                panel.placeOnScreen()
+                if store.selectedItem == nil {
+                    store.selectedID = store.items.first?.id
+                }
+                store.revealed = true
+                panel.orderFrontRegardless()
+            }
+        """
 
-        var seeded = [fileItem, textItem]
+        var seeded: [ClipItem?] = [
+            text(docURL, from: app("com.apple.Safari"), ago: 8,
+                 extra: [NSPasteboard.PasteboardType("public.url-name"): Data(docTitle.utf8)], title: docTitle),
+            text(note, from: app("com.tencent.xinWeChat"), ago: 3 * 60),
+            text("周三 14:00 牙医复诊", from: app("com.apple.Notes"), ago: 17 * 60),
+            text("git log --oneline --graph -n 20 | grep -i fix", from: app("com.apple.Terminal"), ago: 64 * 60),
+            nil,   // 未知来源的图片，见下方
+            text("#FF7A59", from: app("com.figma.Desktop"), ago: 2 * 3600),
+            text(snippet, from: app("com.apple.dt.Xcode", "com.microsoft.VSCode", "com.google.android.studio",
+                                    "com.todesktop.230313mzl4w4u92"), ago: 3 * 3600),
+            files(["/System/Library/Desktop Pictures/.thumbnails/Big Sur Coastline.heic"], ago: 26 * 3600),
+            text("https://github.com/alejandrobujan/tendedero?tab=readme-ov-file#tendedero",
+                 from: app("com.google.Chrome"), ago: 30 * 3600),
+            text("刚在手机上复制的一句话，通过接力过来。", from: .continuity, ago: 50 * 3600),
+            files(["/System/Applications/Calculator.app", "/System/Applications/Notes.app",
+                   "/System/Applications/Preview.app"], ago: 4 * 86400),
+        ]
+
         let image = NSImage(size: NSSize(width: 960, height: 600))
         image.lockFocus()
         if let gradient = NSGradient(colors: [NSColor(srgbRed: 0.99, green: 0.66, blue: 0.42, alpha: 1),
@@ -116,82 +146,13 @@ final class ClipStore: ObservableObject {
             gradient.draw(in: NSRect(origin: .zero, size: image.size), angle: -32)
         }
         image.unlockFocus()
-        if let tiff = image.tiffRepresentation, let thumb = ClipItem.thumbnail(from: tiff, maxPixel: 480) {
-            seeded.insert(ClipItem(kind: .image(thumb),
-                                   snapshot: [[.tiff: tiff]],
-                                   fingerprint: "i:demo-gradient"), at: 1)
-        }
-        items.insert(contentsOf: seeded, at: 0)
-    }
-}
-
-extension ClipItem {
-    static func capture(from pb: NSPasteboard) -> ClipItem? {
-        guard let pbItems = pb.pasteboardItems, !pbItems.isEmpty else { return nil }
-        if let types = pb.types, types.contains(where: { type in
-            ClipStore.ignoredTypes.contains(type.rawValue) || type.rawValue.hasPrefix("dyn.")
-        }) {
-            return nil
+        if let tiff = image.tiffRepresentation, let card = ClipItem.cardImage(from: tiff) {
+            seeded[4] = ClipItem(kind: .image(card.thumb, pixelSize: card.pixelSize), source: .unknown,
+                                 copiedAt: now - 100 * 60, snapshot: [[.tiff: tiff]], fingerprint: "i:demo-gradient")
         }
 
-        var snapshot: [[NSPasteboard.PasteboardType: Data]] = []
-        for item in pbItems {
-            var map: [NSPasteboard.PasteboardType: Data] = [:]
-            for type in item.types {
-                if let data = item.data(forType: type) { map[type] = data }
-            }
-            snapshot.append(map)
-        }
-        guard let first = snapshot.first, !first.isEmpty else { return nil }
-
-        let filePaths: [String] = snapshot.compactMap { map in
-            guard let data = map[.fileURL],
-                  let string = String(data: data, encoding: .utf8),
-                  let url = URL(string: string), url.isFileURL else { return nil }
-            return url.path
-        }
-        if !filePaths.isEmpty {
-            return ClipItem(kind: .files(filePaths), snapshot: snapshot,
-                            fingerprint: "f:" + filePaths.joined(separator: "|"))
-        }
-
-        for type in [NSPasteboard.PasteboardType.tiff, .png] {
-            if let data = first[type], let thumb = thumbnail(from: data) {
-                return ClipItem(kind: .image(thumb), snapshot: snapshot,
-                                fingerprint: "i:" + sha256(data))
-            }
-        }
-
-        if let data = first[.string], let string = String(data: data, encoding: .utf8),
-           !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return ClipItem(kind: .text(string), snapshot: snapshot, fingerprint: "t:" + string)
-        }
-
-        // 只有 RTF 的复制（Word / Pages 等）：取纯文本展示，粘贴仍是原始 RTF。
-        if let data = first[.rtf],
-           let attributed = NSAttributedString(rtf: data, documentAttributes: nil),
-           !attributed.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return ClipItem(kind: .text(attributed.string), snapshot: snapshot,
-                            fingerprint: "t:" + attributed.string)
-        }
-
-        return nil
-    }
-
-    static func thumbnail(from data: Data, maxPixel: CGFloat = 420) -> NSImage? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
-        ]
-        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
-            return nil
-        }
-        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-    }
-
-    static func sha256(_ data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let demo = seeded.compactMap { $0 }
+        items.insert(contentsOf: demo, at: 0)
+        freshIDs.formUnion(demo.map(\.id))
     }
 }

@@ -1,11 +1,12 @@
 import SwiftUI
 
 enum Layout {
-    static let panelHeight: CGFloat = 220
+    static let panelHeight: CGFloat = 248
     static let ropeTop: CGFloat = 10
-    static let spacing: CGFloat = 178
-    static let cardWidth: CGFloat = 150
-    static let cardHeight: CGFloat = 104
+    static let spacing: CGFloat = 194
+    static let cardWidth: CGFloat = 168
+    static let cardHeight: CGFloat = 148     // 整卡：色头 28 + 卡身 120
+    static let cuffHeight: CGFloat = 28
     static let pinAbove: CGFloat = 9.5
     static let sideMargin: CGFloat = 90
 
@@ -74,10 +75,12 @@ struct LineView: View {
 }
 
 private struct Hint: View {
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
         Text("复制点什么，它就会挂在这根绳上")
             .font(.system(size: 12, weight: .medium, design: .rounded))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(CardPalette.of(.unknown, scheme: scheme).ink2)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
             .background(.regularMaterial, in: Capsule())
