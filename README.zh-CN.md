@@ -1,0 +1,76 @@
+<p align="center">
+  <img src="docs/images/icon.png" width="128" alt="ClipLine 图标">
+</p>
+
+<h1 align="center">ClipLine</h1>
+
+<p align="center">
+把剪贴板挂在晾衣绳上的 macOS 剪贴板管理器。<br>
+每次复制都会变成一张卡片，用衣夹挂到菜单栏下方的一根绳上——卡片色头染着来源 App 的颜色。
+</p>
+
+<p align="center">
+  <a href="README.md">English</a>
+</p>
+
+![ClipLine 面板](docs/images/panel-light.png)
+
+## 特性
+
+- **晾衣绳**：按 `⌃⌥V`，一条绳从菜单栏下方垂下来，最近的复制内容挂成一排卡片。点一张卡片就粘贴回你刚才的 App，面板全程不抢焦点。
+- **染色吊牌**：每张卡片顶部的色头取自来源 App 图标的颜色，并显示该 App 图标——一眼看清内容从哪来。链接、代码、颜色、图片、文件各有自己的卡片样式。
+- **打字即搜索**：展开后直接打字。大小写、全半角不敏感；空格分词（要求全部命中）；覆盖正文、文件名、来源 App 名，以及**图片里的文字**（本机 OCR，简体中文 + 英文）。
+- **隐私优先**：历史存在本机 SQLite 数据库。无账号、无网络、无统计。密码管理器标记为隐藏/临时的内容从不记录、从不落盘。
+- **置顶、拖拽、开机自启**：置顶卡片永久保留（黄铜衣夹，不被容量淘汰、清空历史时保留）；卡片可拖进任意 App，内容也能拖上绳；可选登录时自动启动。
+
+| | |
+|---|---|
+| ![深色模式](docs/images/panel-dark.png) | |
+
+## 系统要求
+
+- macOS 14 Sonoma 或更高（Apple 芯片 / Intel 均可）。
+- 构建需要 Xcode（推荐）或 Swift 工具链。零第三方依赖。
+
+## 构建与运行
+
+```sh
+git clone https://github.com/lixiaoshuang79/ClipLine.git
+cd ClipLine
+scripts/build-app.sh          # 产出 build/ClipLine.app
+open build/ClipLine.app
+```
+
+本地构建的 App 是 ad-hoc 签名。想自动粘贴，第一次点卡片时按提示授予辅助功能权限（系统设置 → 隐私与安全性 → 辅助功能）；不授权时点卡片只复制到剪贴板。`scripts/make-dmg.sh` 可以打出可分发 DMG。
+
+## 使用
+
+| 操作 | 方式 |
+|---|---|
+| 唤出 / 收起 | `⌃⌥V`，或点菜单栏图标 |
+| 粘贴卡片 | 点卡片，或 `←` `→` 选择后回车 |
+| 搜索 | 直接打字；空格分词（全部命中）；`Esc` 先清词、再按一次收起 |
+| 置顶 / 取消 | 悬停卡片 → 右上角图钉；置顶卡换黄铜衣夹并排到最前 |
+| 摘除 | 悬停卡片 → 左上角 `×` |
+| 拖出去 | 把卡片拖进编辑器、聊天窗或访达；绳上这条保留 |
+| 拖进来 | 把文本 / 图片 / 文件拖到面板上，松手即挂上绳 |
+| 登录时启动 | 菜单栏图标（右键）→ 登录时启动 |
+| 清空历史 | 菜单栏图标（右键）→ 清空历史（置顶卡片保留） |
+
+## 数据与隐私
+
+- 历史：`~/Library/Application Support/ClipLine/history.sqlite`（目录 0700、文件 0600）。上限 500 条 + 图片总预算 256MB，超出先淘汰最旧。
+- OCR 全部在本机用 Vision 框架完成，任何数据都不出这台电脑。
+- 被标记为隐藏 / 临时 / 自动生成的内容（`org.nspasteboard` 约定）在读取任何数据之前就被丢弃，存储层还会再拒一次。
+
+## 已知限制
+
+- 多选文件拖出去只会送达其中一条（`NSItemProvider` 的限制）；单个文件与文件夹正常。
+- 覆盖构建 / 安装后，辅助功能授权可能需要重新勾选（ad-hoc 签名）。
+- 图片复制后 1–2 秒 OCR 文字才能被搜到。
+
+## 致谢与许可
+
+晾衣绳面板、衣夹与整体视觉语言改编自 [Tendedero](https://github.com/alejandrobujan/tendedero)（MIT）；剪贴板采集与粘贴机制参考 [Maccy](https://github.com/p0deje/Maccy)（MIT）。完整第三方声明见 [ATTRIBUTION.md](ATTRIBUTION.md) 与 [NOTICE](NOTICE)。
+
+ClipLine 使用 [Apache License 2.0](LICENSE) 许可。

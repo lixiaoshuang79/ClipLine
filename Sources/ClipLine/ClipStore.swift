@@ -434,9 +434,9 @@ final class ClipStore: ObservableObject {
         let docTitle = "Layout | Apple Developer Documentation"
         let docURL = "https://developer.apple.com/documentation/swiftui/layout"
         let note = """
-        这是 ClipLine 的原型演示：复制过的内容会挂在这根绳上。
+        这是 ClipLine 的演示：复制过的内容会挂在这根绳上。
 
-        点卡片 = 复制并粘贴回你刚才的 App；← → 选择，回车粘贴，Esc 或点空白处收起；悬停时点 × 把它摘下来。
+        点卡片 = 复制并粘贴回你刚才的 App；← → 选择，回车粘贴，Esc 或点空白处收起；悬停时点 × 把它摘下来，点右上角图钉把它置顶。
         """
         let snippet = """
             func reveal() {

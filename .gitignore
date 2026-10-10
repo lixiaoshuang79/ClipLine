@@ -2,3 +2,6 @@
 build/
 dist/
 .DS_Store
+
+# 过程档案：仅本地保留，不发布
+design-ref/
