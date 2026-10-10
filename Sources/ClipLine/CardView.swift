@@ -286,19 +286,25 @@ struct CardFooter: View {
     let hovering: Bool
     let tone: Tone
 
+    @Environment(\.searchQuery) private var query
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
         let base: Color = {
             if case .fixed(let color) = tone { return color }
             return palette.ink3
         }()
+        // 搜索命中来源 App 名时，页脚常驻"来自 {App}"并标出命中处。
+        let sourceHit = item.source.searchName.map(query.hits) ?? false
+        let showSource = hovering || sourceHit
         HStack(spacing: 6) {
             ZStack(alignment: .leading) {
-                Text(item.footnote).opacity(hovering ? 0 : 1)
-                Text(item.source.footnote).opacity(hovering ? 1 : 0)
+                Text(item.footnote).opacity(showSource ? 0 : 1)
+                Text(sourceLine).opacity(showSource ? 1 : 0)
             }
             .lineLimit(1)
             .truncationMode(.tail)
-            .animation(.easeInOut(duration: 0.18), value: hovering)
+            .animation(.easeInOut(duration: 0.18), value: showSource)
             .frame(maxWidth: .infinity, alignment: .leading)
 
             TimelineView(.periodic(from: .now, by: 30)) { context in
@@ -316,6 +322,16 @@ struct CardFooter: View {
         }
         .font(.system(size: 9.5).monospacedDigit())
         .foregroundStyle(base)
+    }
+
+    /// 只标 App 名本身，不标"来自"。
+    private var sourceLine: AttributedString {
+        guard item.source.kind == .app else { return AttributedString(item.source.footnote) }
+        let mark: Color = {
+            if case .fixed = tone { return .white.opacity(0.3) }
+            return palette.mark(scheme)
+        }()
+        return AttributedString("来自 ") + query.marked(item.source.name, mark: mark)
     }
 }
 
@@ -407,11 +423,12 @@ struct CardPressStyle: ButtonStyle {
 
 extension View {
     /// 临时控件用的玻璃：系统毛玻璃 + 上亮下暗的镜面描边（Tendedero，MIT）。
-    func glassFrame(cornerRadius: CGFloat = 0, circle: Bool = false, capsule: Bool = false) -> some View {
+    func glassFrame(cornerRadius: CGFloat = 0, circle: Bool = false, capsule: Bool = false,
+                    material: Material = .ultraThinMaterial) -> some View {
         let shape: AnyShape = circle ? AnyShape(Circle())
             : capsule ? AnyShape(Capsule())
             : AnyShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        return background(.ultraThinMaterial, in: shape)
+        return background(material, in: shape)
             .overlay(
                 shape.stroke(
                     LinearGradient(colors: [Color.white.opacity(0.55), Color.white.opacity(0.12)],

@@ -1,7 +1,8 @@
 import SwiftUI
 
 enum Layout {
-    static let panelHeight: CGFloat = 248
+    /// 绳与卡 248（见 spec §1）+ 下方搜索胶囊一条。
+    static let panelHeight: CGFloat = 268
     static let ropeTop: CGFloat = 10
     static let spacing: CGFloat = 194
     static let cardWidth: CGFloat = 168
@@ -9,6 +10,11 @@ enum Layout {
     static let cuffHeight: CGFloat = 28
     static let pinAbove: CGFloat = 9.5
     static let sideMargin: CGFloat = 90
+    /// 搜索胶囊：顶边离绳中点下的卡底约 27pt，悬停放大后仍留 20pt。
+    static let searchTop: CGFloat = 226
+    static let searchHeight: CGFloat = 30
+    static let searchIdleWidth: CGFloat = 188
+    static let searchWidth: CGFloat = 300
 
     /// 绳从两端垂下，越宽的绳弧越深（封顶）。
     static func sag(width: CGFloat) -> CGFloat { min(34, width * 0.018) }
@@ -34,56 +40,105 @@ enum Layout {
 struct LineView: View {
     @ObservedObject var store: ClipStore
 
+    private static let startAnchor = "clipline.rope.start"
+
     var body: some View {
         GeometryReader { geometry in
-            let width = Layout.contentWidth(count: store.items.count, screenWidth: geometry.size.width)
-            ScrollView(.horizontal, showsIndicators: false) {
-                ZStack(alignment: .topLeading) {
-                    // 点空白处收起。
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .onTapGesture { store.onRequestTuck?() }
-
-                    Rope(width: width)
-
-                    if store.items.isEmpty {
-                        Hint()
-                            .position(x: width / 2,
-                                      y: Layout.ropeY(x: width / 2, width: width) + 44)
-                            .transition(.opacity)
+            let shown = store.shown
+            let width = Layout.contentWidth(count: shown.count, screenWidth: geometry.size.width)
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    // 懒加载：几百条历史时只建视口附近的卡；x 由序号决定，绳弧上的高度照旧逐张算。
+                    LazyHStack(alignment: .top, spacing: Layout.spacing - Layout.cardWidth) {
+                        ForEach(Array(shown.enumerated()), id: \.element.id) { index, item in
+                            let x = Layout.x(index: index, count: shown.count, width: width)
+                            let ropeY = Layout.ropeY(x: x, width: width)
+                            let lands = store.landingIDs.contains(item.id)
+                            PeggedView(item: item, index: index, store: store, lands: lands)
+                                .frame(width: Layout.cardWidth, height: Layout.panelHeight - ropeY, alignment: .top)
+                                .padding(.top, ropeY - Layout.pinAbove)
+                                .transition(lands ? .hangNew : .hang)
+                        }
                     }
-
-                    ForEach(Array(store.items.enumerated()), id: \.element.id) { index, item in
-                        let x = Layout.x(index: index, count: store.items.count, width: width)
-                        let ropeY = Layout.ropeY(x: x, width: width)
-                        PeggedView(item: item, index: index, store: store)
-                            .frame(width: Layout.cardWidth, height: Layout.panelHeight - ropeY, alignment: .top)
-                            .position(x: x, y: ropeY - Layout.pinAbove + (Layout.panelHeight - ropeY) / 2)
+                    .padding(.leading, Layout.x(index: 0, count: shown.count, width: width) - Layout.cardWidth / 2)
+                    .frame(width: width, height: Layout.panelHeight, alignment: .topLeading)
+                    .background(alignment: .topLeading) { backdrop(width: width, empty: shown.isEmpty) }
+                    .animation(.spring(response: 0.55, dampingFraction: 0.78), value: shown.map(\.id))
+                    .animation(.easeInOut(duration: 0.3), value: shown.isEmpty)
+                }
+                .frame(width: geometry.size.width, height: geometry.size.height)
+                .onChange(of: store.scrollRequest) { _, request in
+                    guard let request else { return }
+                    // 等这一轮过滤的布局落定再滚。
+                    DispatchQueue.main.async {
+                        withAnimation(.easeInOut(duration: 0.28)) {
+                            switch request.target {
+                            case .start: proxy.scrollTo(Self.startAnchor, anchor: .leading)
+                            case .item(let id): proxy.scrollTo(id)
+                            }
+                        }
                     }
                 }
-                .frame(width: width, height: Layout.panelHeight)
-                .animation(.spring(response: 0.55, dampingFraction: 0.78), value: store.items.map(\.id))
-                .animation(.easeInOut(duration: 0.3), value: store.items.isEmpty)
             }
-            .frame(width: geometry.size.width, height: geometry.size.height)
+            .overlay(alignment: .top) {
+                SearchCapsule(store: store)
+                    .padding(.top, Layout.searchTop)
+                    .opacity(store.items.isEmpty ? 0 : 1)
+                    .allowsHitTesting(!store.items.isEmpty)
+            }
         }
+        .environment(\.searchQuery, store.search)
         // 收起时整条绳停在屏幕上沿之外，像自动隐藏的 Dock 一样滑出。
         .offset(y: store.revealed ? 0 : -(Layout.panelHeight + 16))
         .animation(store.revealed ? .spring(response: 0.42, dampingFraction: 0.82)
                                   : .easeIn(duration: 0.22), value: store.revealed)
     }
+
+    /// 绳、点空白收起的底、空状态提示。
+    private func backdrop(width: CGFloat, empty: Bool) -> some View {
+        ZStack(alignment: .topLeading) {
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { store.onRequestTuck?() }
+            Color.clear.frame(width: 1, height: 1).id(Self.startAnchor)
+            Rope(width: width)
+            if empty {
+                Group {
+                    if store.items.isEmpty {
+                        Hint(text: "复制点什么，它就会挂在这根绳上")
+                    } else {
+                        Hint(text: "绳上没有「\(Self.excerpt(store.query))」", detail: "Esc 清除")
+                    }
+                }
+                .position(x: width / 2, y: Layout.ropeY(x: width / 2, width: width) + 44)
+                .transition(.opacity)
+            }
+        }
+        .frame(width: width, height: Layout.panelHeight)
+    }
+
+    private static func excerpt(_ query: String) -> String {
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        return trimmed.count > 16 ? String(trimmed.prefix(16)) + "…" : trimmed
+    }
 }
 
 private struct Hint: View {
+    let text: String
+    var detail: String?
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        Text("复制点什么，它就会挂在这根绳上")
-            .font(.system(size: 12, weight: .medium, design: .rounded))
-            .foregroundStyle(CardPalette.of(.unknown, scheme: scheme).ink2)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(.regularMaterial, in: Capsule())
+        let p = CardPalette.of(.unknown, scheme: scheme)
+        HStack(spacing: 8) {
+            Text(text).foregroundStyle(p.ink2)
+            if let detail { Text(detail).foregroundStyle(p.ink3) }
+        }
+        .font(.system(size: 12, weight: .medium, design: .rounded))
+        .lineLimit(1)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.regularMaterial, in: Capsule())
     }
 }
 

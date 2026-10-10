@@ -8,7 +8,7 @@ struct PeggedView: View {
     @ObservedObject var store: ClipStore
 
     @State private var swing: Double = 0
-    @State private var arrived = false
+    @State private var arrived: Bool
     @State private var hoveringCard = false
     @State private var hoveringRemove = false
     @State private var pulse: Double = 0
@@ -16,6 +16,14 @@ struct PeggedView: View {
 
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// `lands`：刚复制进来的卡第一次出现时落绳；滚动进视口、搜索后挂回的卡不重播。
+    init(item: ClipItem, index: Int, store: ClipStore, lands: Bool) {
+        self.item = item
+        self.index = index
+        self.store = store
+        _arrived = State(initialValue: !lands)
+    }
 
     private var hovering: Bool { hoveringCard || hoveringRemove }
     private var showRing: Bool { store.selectedID == item.id && !hovering }
@@ -31,7 +39,10 @@ struct PeggedView: View {
         .offset(y: arrived || reduceMotion ? 0 : -46)
         .opacity(arrived ? 1 : 0)
         .onAppear {
-            arrive()
+            if !arrived {
+                arrive()
+                store.landingIDs.remove(item.id)
+            }
             playFreshIfNeeded()
         }
         .onChange(of: store.gust) { _, _ in breeze() }
@@ -116,6 +127,46 @@ struct PeggedView: View {
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { sweep = 0 }
         }
+    }
+}
+
+// MARK: 上绳 / 下绳
+
+/// 搜索过滤时：没命中的卡被"摘下"（上提、略缩、淡出），重新命中的卡"挂回"（从上方带一点摆角落下）。
+private struct Hang: ViewModifier {
+    let amount: Double     // 0 = 挂在绳上
+    let lift: CGFloat
+    let turn: Double
+    let shrink: CGFloat
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        let motion = reduceMotion ? 0 : amount
+        content
+            .rotationEffect(.degrees(turn * motion), anchor: .top)
+            .scaleEffect(1 - shrink * motion, anchor: .top)
+            .offset(y: lift * motion)
+            .opacity(1 - amount)
+    }
+}
+
+extension AnyTransition {
+    private static var unclip: AnyTransition {
+        .modifier(active: Hang(amount: 1, lift: -26, turn: 0, shrink: 0.06),
+                  identity: Hang(amount: 0, lift: -26, turn: 0, shrink: 0.06))
+    }
+
+    /// 挂回 / 摘下。
+    static var hang: AnyTransition {
+        .asymmetric(insertion: .modifier(active: Hang(amount: 1, lift: -34, turn: 7, shrink: 0),
+                                         identity: Hang(amount: 0, lift: -34, turn: 7, shrink: 0)),
+                    removal: unclip)
+    }
+
+    /// 新复制的卡：入场交给 `PeggedView` 自己的落绳动画，这里只管摘下。
+    static var hangNew: AnyTransition {
+        .asymmetric(insertion: .identity, removal: unclip)
     }
 }
 

@@ -1,12 +1,15 @@
 import AppKit
 
 /// 屏幕顶部的透明条：浮在所有普通窗口之上、跨 Space、点击不激活本 App。
-/// 结构改编自 Tendedero（MIT）；差异：可成为 key window 以接收键盘。
+/// 结构改编自 Tendedero（MIT）；差异：可成为 key window 以接收键盘，击键默认进搜索框。
 final class LinePanel: NSPanel {
     var onEscape: (() -> Void)?
     var onEnter: (() -> Void)?
     var onLeft: (() -> Void)?
     var onRight: (() -> Void)?
+
+    private(set) weak var searchField: NSTextField?
+    private var wantsSearchFocus = false
 
     init(content: NSView) {
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
@@ -31,13 +34,68 @@ final class LinePanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
+    // MARK: 搜索框焦点
+
+    func adopt(searchField field: NSTextField) {
+        searchField = field
+        if wantsSearchFocus { focusSearch() }
+    }
+
+    /// 让搜索框成为第一响应者（光标放到末尾），击键与输入法都进它。搜索框还没建好时，建好后再补上。
+    func focusSearch() {
+        guard let field = searchField else {
+            wantsSearchFocus = true
+            return
+        }
+        wantsSearchFocus = false
+        guard field.currentEditor() == nil else { return }
+        makeFirstResponder(field)
+        if let editor = field.currentEditor() {
+            editor.selectedRange = NSRange(location: (editor.string as NSString).length, length: 0)
+        }
+    }
+
+    /// 点过卡片之类的地方后，焦点回到搜索框。
+    override func sendEvent(_ event: NSEvent) {
+        super.sendEvent(event)
+        if event.type == .leftMouseUp, isVisible, isKeyWindow { focusSearch() }
+    }
+
+    /// 没有主菜单的 accessory App 收不到编辑快捷键，这里直接转给搜索框的字段编辑器。
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags == .command || flags == [.command, .shift],
+           let key = event.charactersIgnoringModifiers?.lowercased() {
+            let shift = flags.contains(.shift)
+            let action: Selector? = {
+                switch key {
+                case "a" where !shift: return #selector(NSText.selectAll(_:))
+                case "c" where !shift: return #selector(NSText.copy(_:))
+                case "v" where !shift: return #selector(NSText.paste(_:))
+                case "x" where !shift: return #selector(NSText.cut(_:))
+                case "z": return shift ? Selector(("redo:")) : Selector(("undo:"))
+                default: return nil
+                }
+            }()
+            if let action, NSApp.sendAction(action, to: nil, from: self) { return true }
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    /// 搜索框不在编辑时的兜底：方向键/回车/Esc 照旧，可打印字符交回搜索框。
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {
         case 53: onEscape?()            // esc
         case 36, 76: onEnter?()         // return / enter
         case 123: onLeft?()             // ←
         case 124: onRight?()            // →
-        default: super.keyDown(with: event)
+        default:
+            if searchField != nil, event.modifierFlags.intersection([.command, .control]).isEmpty {
+                focusSearch()
+                searchField?.currentEditor()?.keyDown(with: event)
+            } else {
+                super.keyDown(with: event)
+            }
         }
     }
 

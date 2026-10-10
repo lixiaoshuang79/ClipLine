@@ -15,26 +15,31 @@ struct TextBody: View {
     let text: String
     let palette: CardPalette
 
+    @Environment(\.searchQuery) private var query
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
         let cleaned = Self.tidy(text)
+        let mark = palette.mark(scheme)
         if Self.isShort(cleaned) {
-            Text(cleaned)
+            Text(query.marked(cleaned, mark: mark))
                 .font(.system(size: 18, weight: .semibold))
                 .lineLimit(2)
                 .minimumScaleFactor(0.7)
                 .foregroundStyle(palette.ink)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         } else {
-            let (lead, rest) = Self.split(cleaned)
+            let (lead, tail) = Self.split(cleaned)
+            let rest = Self.searchRest(text: text, lead: lead, rest: tail, query: query) ?? tail
             VStack(alignment: .leading, spacing: 3) {
-                Text(lead)
+                Text(query.marked(lead, mark: mark))
                     .font(.system(size: 12.5, weight: .semibold))
                     .tracking(-0.1)
                     .lineLimit(2)
                     .foregroundStyle(palette.ink)
                     .fixedSize(horizontal: false, vertical: true)
                 if !rest.isEmpty {
-                    Text(rest)
+                    Text(query.marked(rest, mark: mark, ink: palette.ink))
                         .font(.system(size: 11))
                         .lineSpacing(2.5)
                         .foregroundStyle(palette.ink2)
@@ -70,6 +75,20 @@ struct TextBody: View {
         return (lead, rest)
     }
 
+    /// 搜索时：命中处落在卡面看不到的地方（导语之后约 60 字或 4 行以外），正文改成命中处前后的一段。
+    /// 导语保留，卡片仍认得出是哪一条。命中只在来源名上时不改。
+    static func searchRest(text: String, lead: String, rest: String, query: SearchQuery) -> String? {
+        guard !query.isEmpty, !query.hits(lead) else { return nil }
+        if let hit = query.firstHit(in: rest) {
+            let before = (rest as NSString).substring(to: hit.location)
+            if hit.location < 60, before.filter(\.isNewline).count < 4 { return nil }
+        }
+        guard let start = lead.isEmpty ? nil : (text as NSString).range(of: lead).location,
+              start != NSNotFound else { return query.snippet(in: text) }
+        let after = (text as NSString).substring(from: start + (lead as NSString).length)
+        return query.snippet(in: after)
+    }
+
     static func countLabel(_ text: String) -> String {
         let count = text.reduce(0) { $1.isWhitespace ? $0 : $0 + 1 }
         return count >= 1000 ? String(format: "%.1fk 字", Double(count) / 1000) : "\(count) 字"
@@ -83,20 +102,24 @@ struct LinkBody: View {
     let title: String?
     let palette: CardPalette
 
+    @Environment(\.searchQuery) private var query
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
         let parts = Self.parts(of: url)
+        let mark = palette.mark(scheme)
         if let title {
             VStack(alignment: .leading, spacing: 3) {
-                Text(title)
+                Text(query.marked(title, mark: mark))
                     .font(.system(size: 12.5, weight: .semibold))
                     .lineLimit(2)
                     .foregroundStyle(palette.ink)
-                Text(parts.domain)
+                Text(query.marked(parts.domain, mark: mark, ink: palette.ink))
                     .font(.system(size: 10.5, weight: .medium))
                     .lineLimit(1)
                     .foregroundStyle(palette.ink2)
                 if !parts.path.isEmpty {
-                    Text(parts.path)
+                    Text(query.marked(parts.path, mark: mark, ink: palette.ink))
                         .font(.system(size: 10))
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -106,7 +129,7 @@ struct LinkBody: View {
         } else {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 3) {
-                    Text(parts.domain)
+                    Text(query.marked(parts.domain, mark: mark))
                         .font(.system(size: 14, weight: .semibold))
                         .lineLimit(1)
                         .foregroundStyle(palette.ink)
@@ -115,7 +138,7 @@ struct LinkBody: View {
                         .foregroundStyle(palette.ring)
                 }
                 if !parts.path.isEmpty {
-                    Text(parts.path)
+                    Text(query.marked(parts.path, mark: mark, ink: palette.ink))
                         .font(.system(size: 10.5))
                         .lineLimit(3)
                         .foregroundStyle(palette.ink2)
@@ -147,20 +170,25 @@ struct CodeBody: View {
     let code: String
     let palette: CardPalette
 
+    @Environment(\.searchQuery) private var query
+
     private static let lineHeight: CGFloat = 13   // 10pt × 1.3
-    private static let maxLines = 6
+    static let maxLines = 6
     private static let gutter: CGFloat = 16
     private static let gap: CGFloat = 5
     /// 底板宽（卡宽 − 两侧内缩 8）减去行号栏；定宽才能让超长行被裁掉而不是撑开布局。
     private static let textWidth = Layout.cardWidth - 16 - gutter - gap
 
     var body: some View {
-        let lines = Array(Self.lines(of: code).prefix(Self.maxLines))
+        let all = Self.lines(of: code)
+        let first = Self.firstVisibleLine(all, query: query)
+        let lines = Array(all.dropFirst(first).prefix(Self.maxLines))
+        let mark = palette.ring.opacity(0.5)
         let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
         HStack(alignment: .top, spacing: Self.gap) {
             VStack(alignment: .trailing, spacing: 0) {
                 ForEach(lines.indices, id: \.self) { index in
-                    Text("\(index + 1)")
+                    Text("\(first + index + 1)")
                         .font(.system(size: 9, design: .monospaced))
                         .frame(height: Self.lineHeight)
                 }
@@ -171,7 +199,7 @@ struct CodeBody: View {
 
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(lines.indices, id: \.self) { index in
-                    Text(lines[index].isEmpty ? " " : lines[index])
+                    Text(query.marked(lines[index].isEmpty ? " " : lines[index], mark: mark))
                         .font(.system(size: 10, design: .monospaced))
                         .lineLimit(1)
                         .fixedSize()
@@ -191,6 +219,14 @@ struct CodeBody: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(palette.codeBase, in: shape)
         .overlay(shape.strokeBorder(.white.opacity(0.06), lineWidth: 0.5))
+    }
+
+    /// 搜索命中在前 6 行之外时，窗口移到命中行的上一行开始（行号照实显示）。优先找所有词都在的那一行。
+    static func firstVisibleLine(_ lines: [String], query: SearchQuery) -> Int {
+        guard !query.isEmpty,
+              let hit = lines.firstIndex(where: query.hitsAll) ?? lines.firstIndex(where: query.hits),
+              hit >= maxLines else { return 0 }
+        return min(hit - 1, lines.count - maxLines)
     }
 
     /// tab 换成 2 个空格、去掉首尾空行和所有行共有的缩进。
@@ -214,11 +250,14 @@ struct ColorBody: View {
     let literal: String
     let palette: CardPalette
 
+    @Environment(\.searchQuery) private var query
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             if color.alphaComponent < 1 { Checkerboard() }
             Color(nsColor: color)
-            Text(literal)
+            Text(query.marked(literal, mark: palette.mark(scheme)))
                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
@@ -295,12 +334,16 @@ struct FileBody: View {
     let paths: [String]
     let palette: CardPalette
 
+    @Environment(\.searchQuery) private var query
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
+        let mark = palette.mark(scheme)
         if paths.count == 1, let path = paths.first {
             HStack(alignment: .top, spacing: 10) {
                 FileThumb(path: path)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(FileFacts.name(path))
+                    Text(query.marked(FileFacts.name(path), mark: mark))
                         .font(.system(size: 12, weight: .semibold))
                         .lineLimit(3)
                         .truncationMode(.middle)
@@ -336,8 +379,8 @@ struct FileBody: View {
                     Text("\(paths.count) 个文件")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(palette.ink)
-                    ForEach(paths.prefix(2), id: \.self) { path in
-                        Text(FileFacts.name(path))
+                    ForEach(Self.listed(paths, query: query), id: \.self) { path in
+                        Text(query.marked(FileFacts.name(path), mark: mark, ink: palette.ink))
                             .font(.system(size: 10))
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -347,6 +390,13 @@ struct FileBody: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
+    }
+
+    /// 多文件卡列出的两个名字：搜索时命中的排前面。
+    static func listed(_ paths: [String], query: SearchQuery) -> [String] {
+        guard !query.isEmpty else { return Array(paths.prefix(2)) }
+        let hit = paths.filter { query.hits(FileFacts.name($0)) || query.hits(($0 as NSString).lastPathComponent) }
+        return Array((hit + paths.filter { !hit.contains($0) }).prefix(2))
     }
 }
 
@@ -385,7 +435,10 @@ enum FileFacts {
     private static var summaries: [String: String] = [:]
 
     static func name(_ path: String) -> String {
-        FileManager.default.displayName(atPath: path)
+        if path.hasSuffix(".app"), let localized = ClipSource.localizedAppName(at: URL(fileURLWithPath: path)) {
+            return localized
+        }
+        return FileManager.default.displayName(atPath: path)
     }
 
     static func folder(_ path: String) -> String {

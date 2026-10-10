@@ -162,6 +162,11 @@ struct CardPalette {
         codeGutter = t.codeGutter.color
     }
 
+    /// 搜索命中的荧光笔底色：沿用本卡的 ring 色相，像在吊牌上划了一道记号笔。
+    func mark(_ scheme: ColorScheme) -> Color {
+        ring.opacity(scheme == .dark ? 0.42 : 0.32)
+    }
+
     private struct Key: Hashable {
         let tint: SourceTint
         let dark: Bool

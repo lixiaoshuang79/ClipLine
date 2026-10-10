@@ -3,7 +3,7 @@ import Carbon
 import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let store = ClipStore()
+    private let store = AppDelegate.makeStore()
     private var panel: LinePanel!
     private var hotKey: HotKey?
     private var statusItem: NSStatusItem!
@@ -20,11 +20,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store.onRequestTuck = { [weak self] in self?.tuck() }
         store.onRequestPaste = { [weak self] item in self?.pasteAndTuck(item) }
 
-        panel.onEscape = { [weak self] in self?.tuck() }
-        panel.onEnter = { [weak self] in
-            guard let self, let item = self.store.selectedItem else { return }
-            self.pasteAndTuck(item)
-        }
+        panel.onEscape = { [weak self] in self?.store.escape() }
+        panel.onEnter = { [weak self] in self?.store.pasteSelected() }
         panel.onLeft = { [weak self] in self?.store.select(offset: -1) }
         panel.onRight = { [weak self] in self?.store.select(offset: 1) }
 
@@ -47,9 +44,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let env = ProcessInfo.processInfo.environment
         if env["CLIPLINE_DEMO"] == "1" { store.seedDemo() }
+        // 调试：CLIPLINE_QUERY=<文字> 预填搜索词，便于不打字就目测搜索态。
+        if let query = env["CLIPLINE_QUERY"], !query.isEmpty { store.replaceQuery(query) }
         if env["CLIPLINE_DEMO"] == "1" || env["CLIPLINE_SHOW"] == "1" { reveal() }
         FileHandle.standardError.write("ClipLine started, items=\(store.items.count)\n".data(using: .utf8)!)
         snapshotIfRequested()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        store.close()
+    }
+
+    /// 演示模式只在内存里，绝不碰真实历史；CLIPLINE_STORE_DIR 可把存储指到别的目录（测试持久化用）。
+    private static func makeStore() -> ClipStore {
+        let env = ProcessInfo.processInfo.environment
+        if env["CLIPLINE_DEMO"] == "1" { return ClipStore(archive: nil, note: "demo: memory only") }
+        let directory = env["CLIPLINE_STORE_DIR"].map {
+            URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true)
+        } ?? ClipArchive.defaultDirectory
+        do {
+            return ClipStore(archive: try ClipArchive(directory: directory))
+        } catch {
+            ClipStore.log("store unavailable at \(directory.path): \(error)")
+            return ClipStore(archive: nil, note: "store unavailable, memory only")
+        }
     }
 
     /// 调试：CLIPLINE_SNAPSHOT=<png 路径> 时，把面板窗口自身抓成图片后退出（自窗口捕获，无需屏幕录制权限）。
@@ -80,11 +98,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let front = NSWorkspace.shared.frontmostApplication
         previousApp = (front?.processIdentifier == getpid()) ? nil : front
         panel.placeOnScreen()
-        if store.selectedItem == nil { store.selectedID = store.items.first?.id }
+        if store.selectedItem == nil { store.selectedID = store.shown.first?.id }
         store.revealed = true
         panel.ignoresMouseEvents = false
         panel.orderFrontRegardless()
-        panel.makeKey()
+        // 自截图调试时不抢键盘：否则前台 App 里正在打的字会落进搜索框。
+        if ProcessInfo.processInfo.environment["CLIPLINE_SNAPSHOT"] == nil {
+            panel.makeKey()
+            panel.focusSearch()
+        }
         installOutsideMonitor()
     }
 
@@ -96,6 +118,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self, !self.store.revealed else { return }
             self.panel.ignoresMouseEvents = true
             self.panel.orderOut(nil)
+            // 每次展开都从完整的绳开始；等滑出后再清，免得收起途中卡片重排。
+            if self.store.fieldHasText || !self.store.query.isEmpty { self.store.replaceQuery("") }
         }
         orderOutWork?.cancel()
         orderOutWork = work
@@ -103,7 +127,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func pasteAndTuck(_ item: ClipItem) {
-        store.writeToPasteboard(item)
+        guard store.writeToPasteboard(item) else {
+            tuck()
+            return
+        }
         tuck(immediate: true)
         if let previousApp,
            NSWorkspace.shared.frontmostApplication?.processIdentifier == getpid() {
@@ -141,6 +168,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         toggle.target = self
         menu.addItem(toggle)
         menu.addItem(.separator())
+        menu.autoenablesItems = false
+        let clear = NSMenuItem(title: "清空历史…", action: #selector(confirmClearHistory), keyEquivalent: "")
+        clear.target = self
+        clear.isEnabled = !store.items.isEmpty
+        menu.addItem(clear)
         let ax = NSMenuItem(title: "辅助功能权限…", action: #selector(openAccessibilityPane), keyEquivalent: "")
         ax.target = self
         menu.addItem(ax)
@@ -154,6 +186,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleFromMenu() {
         store.revealed ? tuck() : reveal()
+    }
+
+    @objc private func confirmClearHistory() {
+        tuck(immediate: true)
+        NSApp.activate()
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "清空剪贴板历史？"
+        alert.informativeText = "将删除全部 \(store.items.count) 条记录，包括保存在本机磁盘上的内容。此操作无法撤销。"
+        alert.addButton(withTitle: "清空").hasDestructiveAction = true
+        alert.addButton(withTitle: "取消")
+        if alert.runModal() == .alertFirstButtonReturn { store.clearHistory() }
     }
 
     @objc private func openAccessibilityPane() {

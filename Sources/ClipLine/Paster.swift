@@ -3,11 +3,11 @@ import ApplicationServices
 import Carbon
 
 enum Paster {
-    /// 把条目按原始类型写回剪贴板。
-    static func copyToPasteboard(_ item: ClipItem) {
+    /// 把快照按原始类型写回剪贴板。
+    static func copyToPasteboard(_ snapshot: [[NSPasteboard.PasteboardType: Data]]) {
         let pb = NSPasteboard.general
         pb.clearContents()
-        let objects: [NSPasteboardItem] = item.snapshot.map { map in
+        let objects: [NSPasteboardItem] = snapshot.map { map in
             let object = NSPasteboardItem()
             for (type, data) in map { object.setData(data, forType: type) }
             return object
