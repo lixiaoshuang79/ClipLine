@@ -297,9 +297,21 @@ struct CardFooter: View {
         // 搜索命中来源 App 名时，页脚常驻"来自 {App}"并标出命中处。
         let sourceHit = item.source.searchName.map(query.hits) ?? false
         let showSource = hovering || sourceHit
+        // 图片靠 OCR 命中时，页脚用命中片段代替像素尺寸，解释它为什么出现在结果里。
+        let ocrSnippet: String? = {
+            guard case .image = item.kind, let ocr = item.ocrText else { return nil }
+            return query.snippet(in: ocr)
+        }()
         HStack(spacing: 6) {
             ZStack(alignment: .leading) {
-                Text(item.footnote).opacity(showSource ? 0 : 1)
+                Group {
+                    if let snippet = ocrSnippet {
+                        Text(query.marked(snippet, mark: markColor))
+                    } else {
+                        Text(item.footnote)
+                    }
+                }
+                .opacity(showSource ? 0 : 1)
                 Text(sourceLine).opacity(showSource ? 1 : 0)
             }
             .lineLimit(1)
@@ -324,14 +336,16 @@ struct CardFooter: View {
         .foregroundStyle(base)
     }
 
+    /// 命中高亮色：叠在图片/色块上用半透明白，普通卡身用来源色。
+    private var markColor: Color {
+        if case .fixed = tone { return .white.opacity(0.3) }
+        return palette.mark(scheme)
+    }
+
     /// 只标 App 名本身，不标"来自"。
     private var sourceLine: AttributedString {
         guard item.source.kind == .app else { return AttributedString(item.source.footnote) }
-        let mark: Color = {
-            if case .fixed = tone { return .white.opacity(0.3) }
-            return palette.mark(scheme)
-        }()
-        return AttributedString("来自 ") + query.marked(item.source.name, mark: mark)
+        return AttributedString("来自 ") + query.marked(item.source.name, mark: markColor)
     }
 }
 

@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import UniformTypeIdentifiers
 
 final class ClipStore: ObservableObject {
     struct ScrollRequest: Equatable {
@@ -79,6 +80,15 @@ final class ClipStore: ObservableObject {
     func ingest(_ captured: ClipItem) {
         if items.first?.fingerprint == captured.fingerprint { return }
         var item = captured
+        // 重新复制一条已置顶的内容：置顶状态跟着走。
+        if let old = items.first(where: { $0.fingerprint == item.fingerprint }), old.pinned {
+            item.pinned = true
+        }
+        // 图片先留一份数据，等落库后跑 OCR（快照随后会被清掉）。
+        var ocrCandidate: Data?
+        if item.isImage, archive != nil, let snapshot = item.snapshot {
+            ocrCandidate = snapshot.first?[.tiff] ?? snapshot.first?[.png]
+        }
         if let archive, item.bytes <= retention.maxStoredBytes, let record = item.record {
             item.snapshot = nil
             io.async { [weak self] in
@@ -88,6 +98,9 @@ final class ClipStore: ObservableObject {
                     Self.log("store: insert failed, keeping clip in memory: \(error)")
                     DispatchQueue.main.async { self?.keepInMemory(record) }
                 }
+            }
+            if let ocrCandidate {
+                scheduleOcr(id: item.id, imageData: ocrCandidate, archive: archive)
             }
         }
         freshIDs.insert(item.id)
@@ -99,18 +112,38 @@ final class ClipStore: ObservableObject {
         commit(items.filter { $0.id != item.id })
     }
 
+    // MARK: 置顶
+
+    /// 置顶上限，防止无限增长（置顶项不参与淘汰，必须自己封顶）。
+    static let maxPinned = 100
+
+    func togglePin(_ item: ClipItem) {
+        guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
+        let next = !items[index].pinned
+        if next, items.lazy.filter(\.pinned).count >= Self.maxPinned {
+            Self.log("pin: 置顶已达上限 \(Self.maxPinned) 条，先取消几条")
+            return
+        }
+        items[index].pinned = next
+        persist { try $0.setPinned(id: item.id, pinned: next) }
+        refilter(queryChanged: false)   // 置顶排最前，顺序会变
+    }
+
+    /// 清空历史（置顶条目保留）。
     func clearHistory() {
-        items = []
+        items = items.filter(\.pinned)
         freshIDs = []
         landingIDs = []
         replaceQuery("")
         refilter(queryChanged: false)
-        persist { try $0.deleteAll() }
+        persist { try $0.deleteAll(keepingPinned: true) }
     }
 
     /// 把新的完整列表定下来：执行容量淘汰，被移走的条目同步从磁盘删除。
     private func commit(_ next: [ClipItem]) {
-        let evicted = retention.evictions(next.map { Retention.Entry(id: $0.id, bytes: $0.bytes, isImage: $0.isImage) })
+        let evicted = retention.evictions(next.map {
+            Retention.Entry(id: $0.id, bytes: $0.bytes, isImage: $0.isImage, pinned: $0.pinned)
+        })
         let kept = evicted.isEmpty ? next : next.filter { !evicted.contains($0.id) }
         let keptIDs = Set(kept.map(\.id))
         let doomed = Set(items.map(\.id)).union(evicted).subtracting(keptIDs)
@@ -183,7 +216,9 @@ final class ClipStore: ObservableObject {
 
     /// 重新算绳上挂哪些卡。换了搜索词时选中第一张命中并滚回开头；清掉搜索词时滚到仍选中的那张。
     private func refilter(queryChanged: Bool) {
-        shown = search.isEmpty ? items : items.filter(search.matches)
+        // 置顶的挂在绳的最前面（组内保持既有时序）。
+        let ordered = items.filter(\.pinned) + items.filter { !$0.pinned }
+        shown = search.isEmpty ? ordered : ordered.filter(search.matches)
         let selectionVisible = selectedID.map { id in shown.contains { $0.id == id } } ?? false
         if queryChanged, !search.isEmpty {
             selectedID = shown.first?.id
@@ -196,22 +231,94 @@ final class ClipStore: ObservableObject {
 
     // MARK: 存储
 
-    /// 粘贴：内存里有快照就用，否则从磁盘读回。读不到时返回 false。
-    @discardableResult
-    func writeToPasteboard(_ item: ClipItem) -> Bool {
-        var snapshot = items.first(where: { $0.id == item.id })?.snapshot ?? item.snapshot
-        if snapshot == nil, let archive {
-            snapshot = io.sync {
+    /// 某条的完整快照：内存里没有就从磁盘读（同步，调用方在需要时用）。
+    private func fullSnapshot(of item: ClipItem) -> [[NSPasteboard.PasteboardType: Data]]? {
+        if let inMemory = items.first(where: { $0.id == item.id })?.snapshot { return inMemory }
+        if let archive {
+            return io.sync {
                 do { return try archive.snapshot(id: item.id) } catch {
                     Self.log("store: snapshot read failed: \(error)")
                     return nil
                 }
             }
         }
-        guard let snapshot, !snapshot.isEmpty else { return false }
+        return item.snapshot
+    }
+
+    /// 粘贴：内存里有快照就用，否则从磁盘读回。读不到时返回 false。
+    @discardableResult
+    func writeToPasteboard(_ item: ClipItem) -> Bool {
+        guard let snapshot = fullSnapshot(of: item), !snapshot.isEmpty else { return false }
         Paster.copyToPasteboard(snapshot)
         lastChangeCount = NSPasteboard.general.changeCount
         return true
+    }
+
+    /// 拖拽载荷用：与粘贴取的是同一份完整快照。
+    func snapshotForDrag(_ item: ClipItem) -> [[NSPasteboard.PasteboardType: Data]]? {
+        fullSnapshot(of: item)
+    }
+
+    // MARK: 拖放进绳
+
+    /// 面板收到拖放：把内容当成一次"复制"收进历史（来源记为当前前台 App）。
+    func acceptDrop(_ providers: [NSItemProvider]) {
+        for provider in providers { loadDropped(provider) }
+    }
+
+    private func loadDropped(_ provider: NSItemProvider) {
+        let colorType = NSPasteboard.PasteboardType.color.rawValue
+        if provider.hasItemConformingToTypeIdentifier(colorType) {
+            provider.loadDataRepresentation(forTypeIdentifier: colorType) { [weak self] data, _ in
+                guard let data,
+                      let color = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NSColor.self, from: data) else { return }
+                self?.ingestDropped(snapshot: [[.color: data]], color: color)
+            }
+            return
+        }
+        if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { [weak self] item, _ in
+                guard let url = Self.url(from: item), url.isFileURL else { return }
+                self?.ingestDropped(snapshot: [[.fileURL: Data(url.absoluteString.utf8)]])
+            }
+            return
+        }
+        for type in [UTType.png, .tiff] where provider.hasItemConformingToTypeIdentifier(type.identifier) {
+            let key: NSPasteboard.PasteboardType = type == .png ? .png : .tiff
+            provider.loadItem(forTypeIdentifier: type.identifier, options: nil) { [weak self] item, _ in
+                let data: Data? = (item as? Data) ?? (item as? NSImage)?.tiffRepresentation
+                guard let data else { return }
+                self?.ingestDropped(snapshot: [[key: data]])
+            }
+            return
+        }
+        for type in [UTType.utf8PlainText, .plainText] where provider.hasItemConformingToTypeIdentifier(type.identifier) {
+            provider.loadItem(forTypeIdentifier: type.identifier, options: nil) { [weak self] item, _ in
+                let string: String? = (item as? String) ?? (item as? NSString).map { $0 as String }
+                    ?? (item as? Data).flatMap { String(data: $0, encoding: .utf8) }
+                guard let string, !string.isEmpty else { return }
+                self?.ingestDropped(snapshot: [[.string: Data(string.utf8)]])
+            }
+            return
+        }
+    }
+
+    /// 拖放里拿到的文件 URL 可能以 URL / 字符串 / 数据三种形态出现。
+    private static func url(from item: NSSecureCoding?) -> URL? {
+        if let url = item as? URL { return url }
+        if let string = item as? String { return URL(string: string) }
+        if let data = item as? Data {
+            if let string = String(data: data, encoding: .utf8), let url = URL(string: string) { return url }
+            return URL(dataRepresentation: data, relativeTo: nil)
+        }
+        return nil
+    }
+
+    private func ingestDropped(snapshot: [[NSPasteboard.PasteboardType: Data]], color: NSColor? = nil) {
+        DispatchQueue.main.async {
+            guard let item = ClipItem.make(snapshot: snapshot, source: ClipSource.frontmost(), color: color) else { return }
+            self.ingest(item)
+        }
     }
 
     /// 后台读库、解缩略图，回主线程并入历史。
@@ -248,6 +355,17 @@ final class ClipStore: ObservableObject {
         if !broken.isEmpty { persist { try $0.delete(ids: broken) } }
         let kept = Set(items.map(\.id))
         Self.log("loaded \(loaded.filter { kept.contains($0.id) }.count) items from store")
+
+        // 旧图没有 OCR 记录的，加载后静默补跑（一张接一张，后台慢慢来）。
+        if let archive {
+            let keptIDs = Set(loaded.map(\.id)).intersection(kept)
+            for record in records where record.kind == "image" && record.ocrText == nil
+                && keptIDs.contains(record.id) {
+                if let data = record.preview {
+                    scheduleOcr(id: record.id, imageData: data, archive: archive)
+                }
+            }
+        }
     }
 
     private func persist(_ work: @escaping (ClipArchive) throws -> Void) {
@@ -255,6 +373,25 @@ final class ClipStore: ObservableObject {
         io.async {
             do { try work(archive) } catch { Self.log("store: \(error)") }
         }
+    }
+
+    /// 后台跑一次 OCR：识别到文字就写库，回主线程补进内存条目（正在进行的搜索立即受益）。
+    /// 没识别到文字时写空串作标记，下次启动不再重复跑。
+    private func scheduleOcr(id: UUID, imageData: Data, archive: ClipArchive) {
+        io.async { [weak self] in
+            let text = Ocr.recognize(imageData) ?? ""
+            do { try archive.setOcr(id: id, text: text) } catch {
+                Self.log("store: ocr write failed: \(error)")
+            }
+            guard !text.isEmpty else { return }
+            DispatchQueue.main.async { self?.adoptOcr(id: id, text: text) }
+        }
+    }
+
+    private func adoptOcr(id: UUID, text: String) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        items[index].setOcr(text)
+        if !search.isEmpty { refilter(queryChanged: false) }
     }
 
     /// 等写盘队列排空。
@@ -342,7 +479,8 @@ final class ClipStore: ObservableObject {
                                  copiedAt: now - 100 * 60, snapshot: [[.tiff: tiff]], fingerprint: "i:demo-gradient")
         }
 
-        let demo = seeded.compactMap { $0 }
+        var demo = seeded.compactMap { $0 }
+        if demo.count > 2 { demo[2].pinned = true }   // 一张置顶卡：黄铜衣夹的目测位
         freshIDs.formUnion(demo.map(\.id))
         landingIDs.formUnion(demo.map(\.id))
         commit(demo + items)

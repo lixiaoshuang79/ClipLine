@@ -12,13 +12,15 @@ struct Retention {
         let id: UUID
         let bytes: Int
         let isImage: Bool
+        var pinned: Bool = false
     }
 
-    /// `entries` 按新→旧排列，返回要淘汰的 id。最新一条永远保留，哪怕它自己就超了预算。
+    /// `entries` 按新→旧排列，返回要淘汰的 id。最新一条永远保留，哪怕它自己就超了预算；置顶条目不参与淘汰。
     func evictions(_ entries: [Entry]) -> Set<UUID> {
         let limit = max(maxItems, 1)
-        var evicted = Set(entries.dropFirst(limit).map(\.id))
-        let kept = entries.prefix(limit)
+        let regular = entries.filter { !$0.pinned }
+        var evicted = Set(regular.dropFirst(limit).map(\.id))
+        let kept = regular.prefix(limit)
         var total = kept.reduce(0) { $1.isImage ? $0 + $1.bytes : $0 }
         for entry in kept.dropFirst().reversed() where entry.isImage && total > imageBudget {
             evicted.insert(entry.id)

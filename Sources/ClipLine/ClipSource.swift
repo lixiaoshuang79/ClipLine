@@ -70,6 +70,11 @@ struct ClipSource {
            !id.isEmpty, let source = app(bundleID: id) {
             return source
         }
+        return frontmost()
+    }
+
+    /// 当前前台 App 作为来源（拖放用：拖拽来源 App 此时通常就是前台）。
+    static func frontmost() -> ClipSource {
         if let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != getpid(),
            let id = front.bundleIdentifier, let source = app(bundleID: id, runningName: front.localizedName) {
             return source

@@ -11,6 +11,7 @@ struct PeggedView: View {
     @State private var arrived: Bool
     @State private var hoveringCard = false
     @State private var hoveringRemove = false
+    @State private var hoveringPin = false
     @State private var pulse: Double = 0
     @State private var sweep: Double = 0
 
@@ -25,12 +26,12 @@ struct PeggedView: View {
         _arrived = State(initialValue: !lands)
     }
 
-    private var hovering: Bool { hoveringCard || hoveringRemove }
+    private var hovering: Bool { hoveringCard || hoveringRemove || hoveringPin }
     private var showRing: Bool { store.selectedID == item.id && !hovering }
 
     var body: some View {
         VStack(spacing: -12) {
-            Clothespin()
+            Clothespin(brass: item.pinned)
                 .zIndex(1)
             card
         }
@@ -59,8 +60,16 @@ struct PeggedView: View {
         }
         .buttonStyle(CardPressStyle())
         .focusable(false)   // 方向键与回车由 LinePanel 处理，按钮不抢键盘焦点
+        // 拖出去 = 分享一份副本；拖进目标 App 后，绳上这条不动。
+        .onDrag {
+            Dragging.provider(for: item, store: store)
+        } preview: {
+            CardView(item: item, hovering: true, showRing: false, pulse: 0, sweep: 0)
+                .frame(width: Layout.cardWidth, height: Layout.cardHeight)
+        }
         .scaleEffect(hovering ? 1.04 : (showRing ? 1.02 : 1), anchor: .top)
         .overlay(alignment: .topLeading) { removeBadge.offset(x: -7, y: -7) }
+        .overlay(alignment: .topTrailing) { pinBadge.offset(x: 7, y: -7) }
         .animation(.easeOut(duration: 0.18), value: hovering)
         .animation(.easeOut(duration: 0.18), value: showRing)
         .onHover { isHovering in
@@ -83,6 +92,26 @@ struct PeggedView: View {
         .opacity(hovering ? 1 : 0)
         .scaleEffect(hovering ? 1 : 0.6)
         .animation(.easeOut(duration: 0.15), value: hovering)
+        .help("从绳上摘掉这条")
+    }
+
+    /// 置顶按钮：悬停出现；已置顶时保持半透明常驻，随时可以取消。
+    private var pinBadge: some View {
+        Button { store.togglePin(item) } label: {
+            Image(systemName: item.pinned ? "pin.slash" : "pin")
+                .font(.system(size: 7.5, weight: .bold))
+                .foregroundStyle(CardPalette.of(item.source, scheme: scheme).ink)
+                .frame(width: 18, height: 18)
+                .glassFrame(circle: true)
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .onHover { hoveringPin = $0 }
+        .opacity(hovering ? 1 : (item.pinned ? 0.85 : 0))
+        .scaleEffect(hovering || item.pinned ? 1 : 0.6)
+        .animation(.easeOut(duration: 0.15), value: hovering)
+        .animation(.easeOut(duration: 0.15), value: item.pinned)
+        .help(item.pinned ? "取消置顶" : "置顶（不会被容量淘汰，清空历史时保留）")
     }
 
     // MARK: 摆动
@@ -170,16 +199,31 @@ extension AnyTransition {
     }
 }
 
-/// 极简铝夹：金属渐变胶囊 + 一根线穿过的槽 + 软阴影（Tendedero，MIT）。永远不染色。
+/// 极简铝夹：金属渐变胶囊 + 一根线穿过的槽 + 软阴影（Tendedero，MIT）。永远不染色；置顶卡换成黄铜夹。
 struct Clothespin: View {
-    private let metal = LinearGradient(
-        stops: [
-            .init(color: Color(white: 0.70), location: 0),
-            .init(color: Color(white: 0.93), location: 0.35),
-            .init(color: Color(white: 0.82), location: 0.65),
-            .init(color: Color(white: 0.62), location: 1),
-        ],
-        startPoint: .leading, endPoint: .trailing)
+    /// 置顶卡用黄铜夹，一眼认出来。
+    var brass: Bool = false
+
+    private var metal: LinearGradient {
+        if brass {
+            return LinearGradient(
+                stops: [
+                    .init(color: Color(red: 0.70, green: 0.52, blue: 0.22), location: 0),
+                    .init(color: Color(red: 0.94, green: 0.79, blue: 0.45), location: 0.35),
+                    .init(color: Color(red: 0.86, green: 0.68, blue: 0.33), location: 0.65),
+                    .init(color: Color(red: 0.60, green: 0.43, blue: 0.17), location: 1),
+                ],
+                startPoint: .leading, endPoint: .trailing)
+        }
+        return LinearGradient(
+            stops: [
+                .init(color: Color(white: 0.70), location: 0),
+                .init(color: Color(white: 0.93), location: 0.35),
+                .init(color: Color(white: 0.82), location: 0.65),
+                .init(color: Color(white: 0.62), location: 1),
+            ],
+            startPoint: .leading, endPoint: .trailing)
+    }
 
     var body: some View {
         RoundedRectangle(cornerRadius: 3.8, style: .continuous)

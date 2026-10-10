@@ -53,7 +53,13 @@ struct SearchQuery: Equatable {
     }
 
     func matches(_ item: ClipItem) -> Bool {
-        folded.allSatisfy { item.searchText.range(of: $0, options: .literal).location != NSNotFound }
+        let primary = item.searchText
+        let ocr = item.ocrFolded
+        return folded.allSatisfy { term in
+            if primary.range(of: term, options: .literal).location != NSNotFound { return true }
+            guard let ocr else { return false }
+            return ocr.range(of: term, options: .literal).location != NSNotFound
+        }
     }
 
     /// 任一检索词出现在 `string` 里。

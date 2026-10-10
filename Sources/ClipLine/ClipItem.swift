@@ -23,10 +23,17 @@ struct ClipItem: Identifiable {
     let bytes: Int
     /// 折叠过大小写与全半角的检索文字（内容 + 来源名）。
     let searchText: NSString
+    /// 置顶：不会被容量淘汰、「清空历史」保留，展示时排在最前（衣夹显示为黄铜色）。
+    var pinned: Bool
+    /// 图片条目的离线 OCR 原文。
+    var ocrText: String?
+    /// OCR 原文折叠后的检索副本（惰性算一次，随 ocrText 一起设置）。
+    var ocrFolded: NSString?
     let tilt = Double.random(in: -1.4 ... 1.4)
 
     init(id: UUID = UUID(), kind: Kind, source: ClipSource, copiedAt: Date,
-         snapshot: [[NSPasteboard.PasteboardType: Data]]?, fingerprint: String, bytes: Int? = nil) {
+         snapshot: [[NSPasteboard.PasteboardType: Data]]?, fingerprint: String, bytes: Int? = nil,
+         pinned: Bool = false, ocrText: String? = nil) {
         self.id = id
         self.kind = kind
         self.source = source
@@ -34,7 +41,19 @@ struct ClipItem: Identifiable {
         self.snapshot = snapshot
         self.fingerprint = fingerprint
         self.bytes = bytes ?? snapshot.map(Self.byteCount) ?? 0
+        self.pinned = pinned
+        // 空串是"识别过但没有文字"的标记，内存里统一归一成 nil。
+        let normalizedOcr = (ocrText?.isEmpty ?? true) ? nil : ocrText
+        self.ocrText = normalizedOcr
+        self.ocrFolded = normalizedOcr.map { SearchQuery.fold($0) as NSString }
         searchText = SearchQuery.haystack(kind: kind, source: source)
+    }
+
+    /// 设置（或清掉）OCR 文字；空串视为"没有文字"。
+    mutating func setOcr(_ text: String?) {
+        let normalized = (text?.isEmpty ?? true) ? nil : text
+        ocrText = normalized
+        ocrFolded = normalized.map { SearchQuery.fold($0) as NSString }
     }
 
     var isImage: Bool {
@@ -82,11 +101,18 @@ extension ClipItem {
             }
             snapshot.append(map)
         }
-        guard let first = snapshot.first, !first.isEmpty else { return nil }
-
         let source = ClipSource.capture(from: pb)
         _ = SourceTint.of(source)   // 取色在捕获时做完，渲染只查缓存
-        func make(_ kind: Kind, _ fingerprint: String) -> ClipItem {
+        // 颜色：优先用 NSColor(from:) 的解析（快照数据在部分系统上不是可解档格式）；拖放路径则直接传对象。
+        let color = snapshot.first?[.color] != nil ? NSColor(from: pb) : nil
+        return make(snapshot: snapshot, source: source, color: color)
+    }
+
+    /// 由一份「剪贴板形状」的快照建条目（捕获与拖放入口共用）。`color` 为拖放路径直接给的颜色对象。
+    static func make(snapshot: [[NSPasteboard.PasteboardType: Data]], source: ClipSource,
+                     color colorHint: NSColor? = nil) -> ClipItem? {
+        guard let first = snapshot.first, !first.isEmpty else { return nil }
+        func build(_ kind: Kind, _ fingerprint: String) -> ClipItem {
             ClipItem(kind: kind, source: source, copiedAt: Date(), snapshot: snapshot, fingerprint: fingerprint)
         }
 
@@ -97,18 +123,21 @@ extension ClipItem {
             return url.path
         }
         if !filePaths.isEmpty {
-            return make(.files(filePaths), "f:" + filePaths.joined(separator: "|"))
+            return build(.files(filePaths), "f:" + filePaths.joined(separator: "|"))
         }
 
         for type in [NSPasteboard.PasteboardType.tiff, .png] {
             if let data = first[type], let image = cardImage(from: data) {
-                return make(.image(image.thumb, pixelSize: image.pixelSize), "i:" + sha256(data))
+                return build(.image(image.thumb, pixelSize: image.pixelSize), "i:" + sha256(data))
             }
         }
 
-        if first[.color] != nil, let color = NSColor(from: pb) {
+        let decodedColor = colorHint ?? first[.color].flatMap {
+            try? NSKeyedUnarchiver.unarchivedObject(ofClass: NSColor.self, from: $0)
+        }
+        if let color = decodedColor {
             let hex = ClipClassifier.hex(color)
-            return make(.color(color, literal: hex), "c:" + hex)
+            return build(.color(color, literal: hex), "c:" + hex)
         }
 
         let title = first[urlNameType]
@@ -117,7 +146,7 @@ extension ClipItem {
         if let data = first[.string], let string = String(data: data, encoding: .utf8),
            !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let kind = ClipClassifier.kind(for: string, source: source, title: title?.isEmpty == false ? title : nil)
-            return make(kind, "t:" + string)
+            return build(kind, "t:" + string)
         }
 
         // 只有 RTF 的复制（Word / Pages 等）：取纯文本展示，粘贴仍是原始 RTF。
@@ -125,7 +154,7 @@ extension ClipItem {
            let attributed = NSAttributedString(rtf: data, documentAttributes: nil),
            !attributed.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let string = attributed.string
-            return make(ClipClassifier.kind(for: string, source: source, title: nil), "t:" + string)
+            return build(ClipClassifier.kind(for: string, source: source, title: nil), "t:" + string)
         }
 
         return nil
@@ -184,7 +213,8 @@ extension ClipItem {
         }()
         return ClipRecord(id: id, fingerprint: fingerprint, kind: tag, payload: payload, title: title,
                           copiedAt: copiedAt, sourceKind: source.storageKind, sourceBundleID: source.bundleID,
-                          sourceName: source.name, itemCount: snapshot.count, bytes: bytes, snapshot: snapshot)
+                          sourceName: source.name, itemCount: snapshot.count, bytes: bytes, snapshot: snapshot,
+                          pinned: pinned, ocrText: ocrText)
     }
 
     /// 从记录重建；图片条目需要先由调用方把缩略图解好。数据不完整时返回 nil。
@@ -212,6 +242,7 @@ extension ClipItem {
         }
         let source = ClipSource.restore(kind: record.sourceKind, bundleID: record.sourceBundleID, name: record.sourceName)
         self.init(id: record.id, kind: kind, source: source, copiedAt: record.copiedAt,
-                  snapshot: nil, fingerprint: record.fingerprint, bytes: record.bytes)
+                  snapshot: nil, fingerprint: record.fingerprint, bytes: record.bytes,
+                  pinned: record.pinned, ocrText: record.ocrText)
     }
 }

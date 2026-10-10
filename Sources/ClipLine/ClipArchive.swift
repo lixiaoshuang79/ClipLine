@@ -19,6 +19,10 @@ struct ClipRecord {
     var bytes: Int
     /// 写入时带完整快照；读出时为 nil（粘贴时再按 id 取）。
     var snapshot: [[NSPasteboard.PasteboardType: Data]]?
+    /// 置顶：不会被容量淘汰，「清空历史」时保留，展示排最前。
+    var pinned: Bool = false
+    /// 图片条目的离线 OCR 原文（检索用）。
+    var ocrText: String?
     /// 读出时附带的一份图片数据，只给图片条目重建缩略图。
     var preview: Data?
 }
@@ -27,7 +31,7 @@ struct ClipRecord {
 /// 快照按「剪贴板项序号 × 类型」拆行存 BLOB：粘贴时整条取回，图片缩略图只读一种表示。
 /// 不做线程同步：调用方必须串行使用（`ClipStore` 把它关在一条串行队列上）。
 final class ClipArchive {
-    static let schemaVersion: Int32 = 1
+    static let schemaVersion: Int32 = 2
 
     static var defaultDirectory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -117,7 +121,16 @@ final class ClipArchive {
                     """)
             }
         }
-        // 以后的结构变化在这里逐级追加：if version < 2 { … PRAGMA user_version = 2 }
+        if version < 2 {
+            try transaction {
+                try exec("""
+                    ALTER TABLE clips ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+                    ALTER TABLE clips ADD COLUMN ocr_text TEXT;
+                    PRAGMA user_version = 2;
+                    """)
+            }
+        }
+        // 以后的结构变化在这里逐级追加：if version < 3 { … PRAGMA user_version = 3 }
     }
 
     // MARK: 增删
@@ -133,12 +146,14 @@ final class ClipArchive {
             try run("DELETE FROM clips WHERE id = ? OR fingerprint = ?", [.text(id), .text(record.fingerprint)])
             try run("""
                 INSERT INTO clips (id, fingerprint, kind, payload, title, copied_at,
-                                   source_kind, source_bundle_id, source_name, item_count, bytes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   source_kind, source_bundle_id, source_name, item_count, bytes,
+                                   pinned, ocr_text)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, [.text(id), .text(record.fingerprint), .text(record.kind), .text(record.payload),
                       .text(record.title), .real(record.copiedAt.timeIntervalSince1970),
                       .text(record.sourceKind), .text(record.sourceBundleID), .text(record.sourceName),
-                      .int(snapshot.count), .int(record.bytes)])
+                      .int(snapshot.count), .int(record.bytes),
+                      .int(record.pinned ? 1 : 0), .text(record.ocrText)])
             let stmt = try prepare("INSERT INTO representations (clip_id, item_index, type, data) VALUES (?, ?, ?, ?)")
             defer { sqlite3_finalize(stmt) }
             for (index, map) in snapshot.enumerated() {
@@ -160,11 +175,26 @@ final class ClipArchive {
         try exec("PRAGMA incremental_vacuum")
     }
 
-    /// 清空历史：删光、归还空间、截断 WAL，旧内容不留在磁盘上。
-    func deleteAll() throws {
+    /// 置顶 / 取消置顶。
+    func setPinned(id: UUID, pinned: Bool) throws {
+        try run("UPDATE clips SET pinned = ? WHERE id = ?", [.int(pinned ? 1 : 0), .text(id.uuidString)])
+    }
+
+    /// 写入（或清除）某条的 OCR 文字。
+    func setOcr(id: UUID, text: String?) throws {
+        try run("UPDATE clips SET ocr_text = ? WHERE id = ?", [.text(text), .text(id.uuidString)])
+    }
+
+    /// 清空历史：默认全清；`keepingPinned` 时保留置顶条目。旧内容不留在磁盘上。
+    func deleteAll(keepingPinned: Bool = false) throws {
         try transaction {
-            try run("DELETE FROM representations")
-            try run("DELETE FROM clips")
+            if keepingPinned {
+                try run("DELETE FROM representations WHERE clip_id IN (SELECT id FROM clips WHERE pinned = 0)")
+                try run("DELETE FROM clips WHERE pinned = 0")
+            } else {
+                try run("DELETE FROM representations")
+                try run("DELETE FROM clips")
+            }
         }
         try exec("PRAGMA incremental_vacuum")
         try exec("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -183,7 +213,7 @@ final class ClipArchive {
     func loadRecords(previewTypes: [NSPasteboard.PasteboardType] = [.png, .tiff]) throws -> [ClipRecord] {
         let stmt = try prepare("""
             SELECT id, fingerprint, kind, payload, title, copied_at,
-                   source_kind, source_bundle_id, source_name, item_count, bytes
+                   source_kind, source_bundle_id, source_name, item_count, bytes, pinned, ocr_text
             FROM clips ORDER BY copied_at DESC
             """)
         defer { sqlite3_finalize(stmt) }
@@ -197,7 +227,8 @@ final class ClipArchive {
                     copiedAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 5)),
                     sourceKind: text(stmt, 6) ?? "unknown", sourceBundleID: text(stmt, 7),
                     sourceName: text(stmt, 8) ?? "", itemCount: Int(sqlite3_column_int64(stmt, 9)),
-                    bytes: Int(sqlite3_column_int64(stmt, 10))))
+                    bytes: Int(sqlite3_column_int64(stmt, 10)),
+                    pinned: sqlite3_column_int64(stmt, 11) != 0, ocrText: text(stmt, 12)))
             }
             rc = sqlite3_step(stmt)
         }

@@ -171,8 +171,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.autoenablesItems = false
         let clear = NSMenuItem(title: "清空历史…", action: #selector(confirmClearHistory), keyEquivalent: "")
         clear.target = self
-        clear.isEnabled = !store.items.isEmpty
+        clear.isEnabled = store.items.contains { !$0.pinned }
         menu.addItem(clear)
+        let login = NSMenuItem(title: "登录时启动", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
+        login.target = self
+        login.state = LaunchAtLogin.isEnabled ? .on : .off
+        menu.addItem(login)
         let ax = NSMenuItem(title: "辅助功能权限…", action: #selector(openAccessibilityPane), keyEquivalent: "")
         ax.target = self
         menu.addItem(ax)
@@ -191,13 +195,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func confirmClearHistory() {
         tuck(immediate: true)
         NSApp.activate()
+        let pinnedCount = store.items.lazy.filter(\.pinned).count
+        let unpinnedCount = store.items.count - pinnedCount
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "清空剪贴板历史？"
-        alert.informativeText = "将删除全部 \(store.items.count) 条记录，包括保存在本机磁盘上的内容。此操作无法撤销。"
+        if pinnedCount > 0 {
+            alert.informativeText = "将删除 \(unpinnedCount) 条记录（含本机磁盘上的内容）；\(pinnedCount) 条已置顶的会保留。此操作无法撤销。"
+        } else {
+            alert.informativeText = "将删除全部 \(unpinnedCount) 条记录，包括保存在本机磁盘上的内容。此操作无法撤销。"
+        }
         alert.addButton(withTitle: "清空").hasDestructiveAction = true
         alert.addButton(withTitle: "取消")
         if alert.runModal() == .alertFirstButtonReturn { store.clearHistory() }
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        do {
+            if LaunchAtLogin.isEnabled {
+                LaunchAtLogin.disable()
+            } else {
+                try LaunchAtLogin.enable()
+            }
+        } catch {
+            NSApp.activate()
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "设置「登录时启动」失败"
+            alert.informativeText = "\(error)"
+            alert.runModal()
+        }
     }
 
     @objc private func openAccessibilityPane() {

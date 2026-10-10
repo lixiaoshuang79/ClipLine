@@ -39,6 +39,7 @@ enum Layout {
 
 struct LineView: View {
     @ObservedObject var store: ClipStore
+    @State private var dropTargeted = false
 
     private static let startAnchor = "clipline.rope.start"
 
@@ -88,6 +89,19 @@ struct LineView: View {
             }
         }
         .environment(\.searchQuery, store.search)
+        // 拖进来 = 当成一次复制收进历史。
+        .onDrop(of: [.fileURL, .url, .image, .text], isTargeted: $dropTargeted) { providers in
+            store.acceptDrop(providers)
+            return true
+        }
+        .overlay(alignment: .top) {
+            if dropTargeted {
+                Hint(text: "松手，把它挂到绳上")
+                    .padding(.top, 54)
+                    .transition(.opacity.combined(with: .offset(y: -6)))
+            }
+        }
+        .animation(.easeOut(duration: 0.15), value: dropTargeted)
         // 收起时整条绳停在屏幕上沿之外，像自动隐藏的 Dock 一样滑出。
         .offset(y: store.revealed ? 0 : -(Layout.panelHeight + 16))
         .animation(store.revealed ? .spring(response: 0.42, dampingFraction: 0.82)
