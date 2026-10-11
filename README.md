@@ -31,7 +31,9 @@ Every copy becomes a card, pegged to a line under the menu bar — tinted with t
 
 Grab `ClipLine-<version>.dmg` from the [latest release](https://github.com/lixiaoshuang79/ClipLine/releases/latest), open it, and drag ClipLine into Applications.
 
-The app is ad-hoc signed (not notarized): if Gatekeeper complains, right-click → Open. Then press `⌃⌥V` to bring down the line, and grant Accessibility permission when prompted (see below).
+The app is ad-hoc signed (not notarized), so macOS will block the first launch — you'll see 「未打开"ClipLine" / Apple 无法验证…」. To allow it: **System Settings → Privacy & Security → "Open Anyway" (系统设置 → 隐私与安全性 → 在「安全性」一栏点「仍要打开」)**. On macOS 14 and earlier you can instead right-click the app → Open.
+
+Then press `⌃⌥V` to bring down the line, and grant Accessibility permission when prompted (see below).
 
 Or build from source — see below.
 

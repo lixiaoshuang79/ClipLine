@@ -31,7 +31,9 @@
 
 到 [最新 Release](https://github.com/lixiaoshuang79/ClipLine/releases/latest) 下载 `ClipLine-<版本>.dmg`，打开后把 ClipLine 拖进 Applications。
 
-App 是 ad-hoc 签名（未经公证）：若 Gatekeeper 提示"无法验证开发者"，右键 →「打开」。之后按 `⌃⌥V` 唤出剪贴板绳，首次点卡片时按提示授予辅助功能权限。
+App 是 ad-hoc 签名（未经公证），**首次打开会被 macOS 拦下**（提示「未打开"ClipLine"」）。放行方法：**打开 系统设置 → 隐私与安全性 → 在下方「安全性」一栏点「仍要打开」**；macOS 14 及更早的系统可以直接右键 App →「打开」。
+
+之后按 `⌃⌥V` 唤出剪贴板绳，首次点卡片时按提示授予辅助功能权限。
 
 也可以从源码构建——见下。
 
