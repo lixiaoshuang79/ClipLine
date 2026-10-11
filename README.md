@@ -27,6 +27,14 @@ Every copy becomes a card, pegged to a line under the menu bar — tinted with t
 |---|---|
 | ![dark mode](docs/images/panel-dark.png) | |
 
+## Install
+
+Grab `ClipLine-<version>.dmg` from the [latest release](https://github.com/lixiaoshuang79/ClipLine/releases/latest), open it, and drag ClipLine into Applications.
+
+The app is ad-hoc signed (not notarized): if Gatekeeper complains, right-click → Open. Then press `⌃⌥V` to bring down the line, and grant Accessibility permission when prompted (see below).
+
+Or build from source — see below.
+
 ## Requirements
 
 - macOS 14 Sonoma or later (Apple silicon or Intel).

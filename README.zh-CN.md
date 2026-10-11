@@ -27,6 +27,14 @@
 |---|---|
 | ![深色模式](docs/images/panel-dark.png) | |
 
+## 安装
+
+到 [最新 Release](https://github.com/lixiaoshuang79/ClipLine/releases/latest) 下载 `ClipLine-<版本>.dmg`，打开后把 ClipLine 拖进 Applications。
+
+App 是 ad-hoc 签名（未经公证）：若 Gatekeeper 提示"无法验证开发者"，右键 →「打开」。之后按 `⌃⌥V` 唤出剪贴板绳，首次点卡片时按提示授予辅助功能权限。
+
+也可以从源码构建——见下。
+
 ## 系统要求
 
 - macOS 14 Sonoma 或更高（Apple 芯片 / Intel 均可）。
