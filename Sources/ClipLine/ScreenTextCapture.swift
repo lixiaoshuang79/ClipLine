@@ -1,4 +1,5 @@
 import AppKit
+import ScreenCaptureKit
 
 /// 屏幕取字（交互照 Shottr）：按热键的一刻把各块屏定格，遮罩铺上定格画面（不压暗），
 /// 截图式准星框选；松手即裁定格画面跑本机 OCR，文字进剪贴板与历史，顶部弹确认卡。
@@ -8,6 +9,9 @@ import AppKit
 final class ScreenTextCapture {
     /// 选区面积上限（像素），同 Shottr 的 "Area is too large" 保护。
     private static let maxAreaPixels = 40_000_000
+    /// 系统授权请求（CGRequestScreenCaptureAccess 会弹系统窗）每次启动最多发一次：
+    /// 权限失效期间用户连按热键时，不再反复弹系统授权窗。
+    private static var requestedScreenCaptureOnce = false
     /// 识别超过这么久才先亮「正在识别」：小选区几十毫秒就出结果，直接给结果卡更干净。
     private static let workingCardDelay: TimeInterval = 0.12
 
@@ -20,6 +24,8 @@ final class ScreenTextCapture {
     private var resignObserver: Any?
     private var becomeObserver: Any?
     private var activatedThisSession = false
+    /// 正在异步定格（SCK 抓屏）中：期间忽略热键重入，防止连按触发两轮定格。
+    private var freezing = false
     private var card: OcrResultPanel?
     private var lastItem: ClipItem?
     private var lastText = ""
@@ -50,13 +56,16 @@ final class ScreenTextCapture {
     // MARK: 开始
 
     func begin() {
-        // 取字进行中再按热键 = 什么都不做（做成"再按=取消"会让连按两下的用户看到遮罩闪一下就没了）。
-        guard !selecting else {
-            Self.debug("begin(): 正在框选，忽略重复触发")
+        // 取字/定格进行中再按热键 = 什么都不做（做成"再按=取消"会让连按两下的用户看到遮罩闪一下就没了）。
+        guard !selecting, !freezing else {
+            Self.debug("begin(): 正在框选或定格，忽略重复触发")
             return
         }
         guard CGPreflightScreenCaptureAccess() else {
-            _ = CGRequestScreenCaptureAccess()
+            if !Self.requestedScreenCaptureOnce {
+                Self.requestedScreenCaptureOnce = true
+                _ = CGRequestScreenCaptureAccess()
+            }
             guideToPermission()
             return
         }
@@ -73,61 +82,80 @@ final class ScreenTextCapture {
 
     private func freezeAndSelect() {
         guard !selecting else { return }
-        let started = CACurrentMediaTime()
-        let screens = NSScreen.screens
-        guard let shots = Self.freeze(screens) else {
-            guideToPermission()
-            return
-        }
-        let captured = CACurrentMediaTime()
-        let front = NSWorkspace.shared.frontmostApplication
-        previousApp = (front?.processIdentifier == getpid()) ? nil : front
-        generation += 1
-        frozen = shots
-        overlays = zip(screens, shots).map { screen, image in
-            let overlay = SelectionOverlay(screen: screen, backdrop: image)
-            overlay.onFinish = { [weak self, weak overlay] rect in
-                guard let overlay else { return }
-                self?.finish(rect: rect, on: overlay)
+        Task { @MainActor [weak self] in
+            guard let self, !self.selecting else { return }
+            self.freezing = true
+            defer { self.freezing = false }
+            let started = CACurrentMediaTime()
+            let screens = NSScreen.screens
+            guard let shots = await Self.freeze(screens) else {
+                self.guideToPermission()
+                return
             }
-            overlay.onCancel = { [weak self] in self?.cancel(reason: "用户取消") }
-            return overlay
+            let captured = CACurrentMediaTime()
+            let front = NSWorkspace.shared.frontmostApplication
+            self.previousApp = (front?.processIdentifier == getpid()) ? nil : front
+            self.generation += 1
+            self.frozen = shots
+            self.overlays = zip(screens, shots).map { screen, image in
+                let overlay = SelectionOverlay(screen: screen, backdrop: image)
+                overlay.onFinish = { [weak self, weak overlay] rect in
+                    guard let overlay else { return }
+                    self?.finish(rect: rect, on: overlay)
+                }
+                overlay.onCancel = { [weak self] in self?.cancel(reason: "用户取消") }
+                return overlay
+            }
+            let pointer = NSEvent.mouseLocation
+            let home = self.overlays.first { NSMouseInRect(pointer, $0.targetScreen.frame, false) } ?? self.overlays.first
+            for overlay in self.overlays where overlay !== home { overlay.orderFrontRegardless() }
+            home?.makeKeyAndOrderFront(nil)
+            // 截图工具通例（Shottr 也如此）：框选期间本 App 做前台，十字准星与 Esc 才稳；结束后把原 App 请回来。
+            NSApp.activate()
+            if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+            self.overlays.forEach { $0.syncPointer() }
+            self.installSessionMonitors()
+            if NSApp.isActive { self.ensureCrosshair(generation: self.generation) }
+            Self.debug(String(format: "begin(): 定格 %d 块屏（抓屏 %.0fms），热键→遮罩上屏 %.0fms；前台=%@ active=%@",
+                              screens.count, (captured - started) * 1000, (CACurrentMediaTime() - started) * 1000,
+                              self.previousApp?.localizedName ?? "本 App", NSApp.isActive ? "是" : "否"))
         }
-        let pointer = NSEvent.mouseLocation
-        let home = overlays.first { NSMouseInRect(pointer, $0.targetScreen.frame, false) } ?? overlays.first
-        for overlay in overlays where overlay !== home { overlay.orderFrontRegardless() }
-        home?.makeKeyAndOrderFront(nil)
-        // 截图工具通例（Shottr 也如此）：框选期间本 App 做前台，十字准星与 Esc 才稳；结束后把原 App 请回来。
-        NSApp.activate()
-        if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
-        overlays.forEach { $0.syncPointer() }
-        installSessionMonitors()
-        if NSApp.isActive { ensureCrosshair(generation: generation) }
-        Self.debug(String(format: "begin(): 定格 %d 块屏（抓屏 %.0fms），热键→遮罩上屏 %.0fms；前台=%@ active=%@",
-                          screens.count, (captured - started) * 1000, (CACurrentMediaTime() - started) * 1000,
-                          previousApp?.localizedName ?? "本 App", NSApp.isActive ? "是" : "否"))
     }
 
-    /// 启动后预热一次抓屏通路：首次抓屏要多花 50ms 左右做初始化，别让它落在第一次按热键上。
+    /// 启动后预热一次抓屏通路：首次抓屏要多花几十毫秒做初始化，别让它落在第一次按热键上。
     /// 没有屏幕录制权限时什么都不做（不在启动时弹授权）。
     static func warmUp() {
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) {
             guard CGPreflightScreenCaptureAccess() else { return }
-            _ = CGDisplayCreateImage(CGMainDisplayID(), rect: CGRect(x: 0, y: 0, width: 2, height: 2))
+            Task { _ = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) }
         }
     }
 
-    /// 各屏同时抓一帧（显示器原生像素）。任何一块抓不到就视为没有屏幕录制权限。
-    private static func freeze(_ screens: [NSScreen]) -> [CGImage]? {
-        let ids = screens.map(displayID)
-        var images = [CGImage?](repeating: nil, count: screens.count)
-        images.withUnsafeMutableBufferPointer { buffer in
-            DispatchQueue.concurrentPerform(iterations: ids.count) { index in
-                buffer[index] = CGDisplayCreateImage(ids[index])
+    /// 各屏依次抓一帧（显示器原生像素）。任何一块抓不到就视为没有屏幕录制权限。
+    /// 走 ScreenCaptureKit 而不是旧的 CGDisplayCreateImage：新系统对旧采集通道的授权校验
+    /// 更不稳定（已授权仍可能被反复弹授权窗），SCK 的授权一次即持久、也非废弃接口。
+    private static func freeze(_ screens: [NSScreen]) async -> [CGImage]? {
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            var shots: [CGImage] = []
+            for screen in screens {
+                guard let display = content.displays.first(where: { $0.displayID == displayID(screen) }) else {
+                    return nil
+                }
+                let config = SCStreamConfiguration()
+                config.width = display.width
+                config.height = display.height
+                config.showsCursor = false
+                config.captureResolution = .best
+                let image = try await SCScreenshotManager.captureImage(
+                    contentFilter: SCContentFilter(display: display, excludingWindows: []), configuration: config)
+                shots.append(image)
             }
+            return shots
+        } catch {
+            debug("freeze(SCK) 失败：\(error)")
+            return nil
         }
-        let shots = images.compactMap { $0 }
-        return shots.count == screens.count ? shots : nil
     }
 
     private static func displayID(_ screen: NSScreen) -> CGDirectDisplayID {

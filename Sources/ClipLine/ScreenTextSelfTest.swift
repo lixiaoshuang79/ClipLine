@@ -39,12 +39,18 @@ final class ScreenTextSelfTest {
         note("前台（取字前）: \(frontName)")
         let started = CACurrentMediaTime()
         capture.begin()
-        note(String(format: "begin() 同步耗时 %.0fms，遮罩 %d 扇", (CACurrentMediaTime() - started) * 1000,
-                    capture.debugOverlays.count))
-        guard let overlay = capture.debugOverlays.first(where: { $0.targetScreen == screen }) else {
+        // SCK 定格是异步的：轮询等遮罩上屏（最多 2 秒）。
+        var overlay: SelectionOverlay?
+        for _ in 0..<40 {
+            if let hit = capture.debugOverlays.first(where: { $0.targetScreen == screen }) { overlay = hit; break }
+            await sleep(0.05)
+        }
+        guard let overlay else {
             note("FAIL: 没有遮罩上屏")
             return finish()
         }
+        note(String(format: "begin()→遮罩上屏 %.0fms，遮罩 %d 扇", (CACurrentMediaTime() - started) * 1000,
+                    capture.debugOverlays.count))
         await sleep(0.5)
         note("激活: isActive=\(NSApp.isActive) 遮罩是 key=\(overlay.isKeyWindow) 前台=\(frontName)")
         await checkCursor("0a-cursor-in-session", expectCrosshair: true)
@@ -110,8 +116,12 @@ final class ScreenTextSelfTest {
         fixture.orderOut(nil)
         await sleep(0.3)
         capture.begin()
-        await sleep(0.4)
-        if let again = capture.debugOverlays.first(where: { $0.targetScreen == screen }) {
+        var again: SelectionOverlay?
+        for _ in 0..<40 {
+            if let hit = capture.debugOverlays.first(where: { $0.targetScreen == screen }) { again = hit; break }
+            await sleep(0.05)
+        }
+        if let again {
             again.debugMouse(.leftMouseDown, at: from)
             again.debugMouse(.leftMouseDragged, at: mid)
             let before = again.debugSelection

@@ -71,6 +71,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["CLIPLINE_DEMO"] == "1" || env["CLIPLINE_SHOW"] == "1" { reveal() }
         // 调试：CLIPLINE_SETTINGS=1 直接开设置窗口（截图/自查用）。
         if env["CLIPLINE_SETTINGS"] == "1" { openSettings() }
+        // 调试：CLIPLINE_OCR_RUN_DEBUG=preflight 静默体检屏幕录制权限（不弹任何窗），结果写 /tmp/clipline-preflight.txt。
+        if env["CLIPLINE_OCR_RUN_DEBUG"] == "preflight" {
+            let preflight = CGPreflightScreenCaptureAccess()
+            var capture = "未尝试（预检为假）"
+            if preflight {
+                capture = CGDisplayCreateImage(CGMainDisplayID(), rect: CGRect(x: 0, y: 0, width: 4, height: 4))
+                    .map { "成功 \($0.width)x\($0.height)" } ?? "失败(nil)"
+            }
+            try? "preflight=\(preflight) capture=\(capture)\n"
+                .write(to: URL(fileURLWithPath: "/tmp/clipline-preflight.txt"), atomically: true, encoding: .utf8)
+            NSApp.terminate(nil)
+            return
+        }
         // 调试：CLIPLINE_OCR_RUN_DEBUG=script 无人值守走一遍屏幕取字全流程、逐状态截图
         // （存 CLIPLINE_OCR_RUN_DIR，默认 /tmp/clipline-ocr-selftest），结论见其中 report.txt。
         if let directory = Self.selfTestDirectory {
