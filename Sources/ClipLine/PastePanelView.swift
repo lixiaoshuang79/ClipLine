@@ -8,7 +8,8 @@ struct PastePanelView: View {
 
     static let panelHeight: CGFloat = 246
     static let sideMargin: CGFloat = 6
-    static let cornerRadius: CGFloat = 16
+    /// 圆角按 REA 静态逆向的代码常量：macOS 26+ 卡片为 20pt（见参照包 rea-report.md）。
+    static let cornerRadius: CGFloat = 20
     static let cardWidth: CGFloat = 231.5
     static let cardHeight: CGFloat = 160
     static let cardSpacing: CGFloat = 12
@@ -89,9 +90,9 @@ struct PastePanelView: View {
         }
         .animation(.easeOut(duration: 0.15), value: dropTargeted)
         // 收起时整块滑到屏幕下方之外，像 Dock 一样滑出。
+        // 动画曲线照 REA 逆向：0.15s cubic-bezier(0.2, 0.8, 0.2, 1.0)（自 y=-窗高 滑入）。
         .offset(y: store.revealed ? 0 : Self.panelHeight + 14)
-        .animation(store.revealed ? .spring(response: 0.42, dampingFraction: 0.84)
-                                  : .easeIn(duration: 0.22), value: store.revealed)
+        .animation(.timingCurve(0.2, 0.8, 0.2, 1.0, duration: 0.15), value: store.revealed)
     }
 
     /// 顶栏：搜索 + 「剪贴板历史」标签药丸（参照 Paste 顶栏的居中排布）。
@@ -110,7 +111,8 @@ struct PastePanelView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 4)
-            .background(Capsule().fill(Color.primary.opacity(0.07)))
+            // 高亮底色照 REA 逆向：(0.463, 0.463, 0.714) @ α0.12。
+            .background(Capsule().fill(Color(.sRGB, red: 0.463, green: 0.463, blue: 0.714).opacity(0.12)))
             .foregroundStyle(.primary)
         }
         .frame(maxWidth: .infinity)
@@ -130,7 +132,7 @@ private struct PasteCardView: View {
     @Environment(\.colorScheme) private var scheme
     @State private var hovering = false
 
-    private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: 12, style: .continuous) }
+    private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: PastePanelView.cornerRadius, style: .continuous) }
 
     var body: some View {
         let palette = CardPalette.of(item.source, scheme: scheme)
