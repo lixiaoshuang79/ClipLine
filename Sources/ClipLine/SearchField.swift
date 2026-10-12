@@ -55,6 +55,8 @@ struct SearchField: NSViewRepresentable {
     @ObservedObject var store: ClipStore
     let ink: Color
     let placeholder: Color
+    /// 占位文案；底部面板的顶栏只要图标不要文字时传空串。
+    var placeholderText: String = "输入即可搜索"
 
     func makeCoordinator() -> Coordinator { Coordinator(store: store) }
 
@@ -77,7 +79,7 @@ struct SearchField: NSViewRepresentable {
 
     func updateNSView(_ field: ClipSearchField, context: Context) {
         field.textColor = NSColor(ink)
-        field.placeholderAttributedString = NSAttributedString(string: "输入即可搜索", attributes: [
+        field.placeholderAttributedString = NSAttributedString(string: placeholderText, attributes: [
             .foregroundColor: NSColor(placeholder),
             .font: field.font ?? .systemFont(ofSize: 13),
         ])

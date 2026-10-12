@@ -6,13 +6,15 @@ import SwiftUI
 struct PastePanelView: View {
     @ObservedObject var store: ClipStore
 
-    static let panelHeight: CGFloat = 246
+    // 几何全部按 Paste 快捷面板实拍像素实测（2x 截图折算；见参照包 REFERENCE.md）：
+    // 面板贴屏幕底边、高 327pt；卡片 231.5×230（近正方，别做扁）；圆角 14；间距 12。
+    static let panelHeight: CGFloat = 327
     static let sideMargin: CGFloat = 6
-    /// 圆角按 REA 静态逆向的代码常量：macOS 26+ 卡片为 20pt（见参照包 rea-report.md）。
     static let cornerRadius: CGFloat = 20
     static let cardWidth: CGFloat = 231.5
-    static let cardHeight: CGFloat = 160
+    static let cardHeight: CGFloat = 230
     static let cardSpacing: CGFloat = 12
+    static let cardCornerRadius: CGFloat = 14
     static let headerHeight: CGFloat = 47.5
     static let rowPadding: CGFloat = 14
 
@@ -25,7 +27,7 @@ struct PastePanelView: View {
         VStack(spacing: 0) {
             toolbar
                 .frame(height: 30)
-                .padding(.top, 13)
+                .padding(.top, 14)
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: Self.cardSpacing) {
@@ -39,7 +41,7 @@ struct PastePanelView: View {
                     .animation(.spring(response: 0.4, dampingFraction: 0.85), value: store.shown.map(\.id))
                 }
                 .frame(height: Self.cardHeight)
-                .padding(.top, 10)
+                .padding(.top, 19)
                 .onChange(of: store.scrollRequest) { _, request in
                     guard let request else { return }
                     DispatchQueue.main.async {
@@ -65,9 +67,8 @@ struct PastePanelView: View {
         }
         .background {
             ZStack {
-                Rectangle().fill(.regularMaterial)
-                Rectangle().fill(Color(white: scheme == .dark ? 0.12 : 0.97)
-                    .opacity(scheme == .dark ? 0.4 : 0.62))
+                PanelGlass()
+                if scheme == .dark { Rectangle().fill(.black.opacity(0.25)) }
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
@@ -101,7 +102,7 @@ struct PastePanelView: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(.secondary)
-            SearchField(store: store, ink: .primary, placeholder: .secondary)
+            SearchField(store: store, ink: .primary, placeholder: .secondary, placeholderText: "")
                 .frame(width: 150, height: 20)
             HStack(spacing: 5) {
                 Image(systemName: "clock.arrow.circlepath")
@@ -132,7 +133,7 @@ private struct PasteCardView: View {
     @Environment(\.colorScheme) private var scheme
     @State private var hovering = false
 
-    private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: PastePanelView.cornerRadius, style: .continuous) }
+    private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: PastePanelView.cardCornerRadius, style: .continuous) }
 
     var body: some View {
         let palette = CardPalette.of(item.source, scheme: scheme)
@@ -203,7 +204,6 @@ private struct PasteCardView: View {
         if case .files(let paths) = item.kind { return "\(paths.count) 个文件" }
         return item.kind.label
     }
-
     static func relative(_ date: Date) -> String {
         let formatter = RelativeDateTimeFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
@@ -265,7 +265,7 @@ private struct PasteCardBody: View {
     private func codePreview(_ code: String) -> some View {
         let lines = code.replacingOccurrences(of: "\t", with: "  ")
             .split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
-            .prefix(9)
+            .prefix(12)
         return fadedPreview {
             VStack(alignment: .leading, spacing: 1) {
                 ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
@@ -315,16 +315,21 @@ private struct PasteCardBody: View {
 
     private func imagePreview(_ image: NSImage, _ pixelSize: CGSize) -> some View {
         let tall = pixelSize.width > 0 && pixelSize.height / pixelSize.width > 1.6
+        let bodyHeight = PastePanelView.cardHeight - PastePanelView.headerHeight
         return ZStack(alignment: .bottomLeading) {
             Checkerboard()
+            // 显式给定尺寸并就地裁切：fill 放大后的图片不能把 ZStack 撑宽，
+            // 否则底左对齐的尺寸徽标会被卡片裁掉左端（"1920" 变 "20"）。
             Image(nsImage: image)
                 .resizable()
                 .interpolation(.high)
                 .aspectRatio(contentMode: .fill)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: tall ? .top : .center)
+                .frame(width: PastePanelView.cardWidth, height: bodyHeight,
+                       alignment: tall ? .top : .center)
                 .clipped()
             if pixelSize.width > 0 {
-                Text("\(Int(pixelSize.width)) × \(Int(pixelSize.height))")
+                // verbatim：Text 字面量插值会走本地化键与数字分组（"1,200"），尺寸要原样。
+                Text(verbatim: "\(Int(pixelSize.width)) × \(Int(pixelSize.height))")
                     .font(.system(size: 10.5, weight: .medium))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 8)
@@ -333,6 +338,8 @@ private struct PasteCardBody: View {
                     .padding(9)
             }
         }
+        .frame(width: PastePanelView.cardWidth, height: bodyHeight)
+        .clipped()
     }
 
     private func filesPreview(_ paths: [String]) -> some View {
@@ -340,10 +347,10 @@ private struct PasteCardBody: View {
             if let first = paths.first {
                 Image(nsImage: NSWorkspace.shared.icon(forFile: first))
                     .resizable()
-                    .frame(width: 50, height: 50)
+                    .frame(width: 62, height: 62)
             } else {
                 Image(systemName: "doc")
-                    .font(.system(size: 42))
+                    .font(.system(size: 52))
                     .foregroundStyle(palette.ink3)
             }
             Text(paths.count > 1 ? "多个文件" : (paths.first.map { ($0 as NSString).lastPathComponent } ?? "文件"))
@@ -355,6 +362,19 @@ private struct PasteCardBody: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+}
+
+/// 面板毛玻璃：NSVisualEffectView material = menu（REA 逆向值，同 Paste）——透亮、背后内容可见。
+private struct PanelGlass: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .menu
+        view.blendingMode = .behindWindow
+        view.state = .active
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
 }
 
 /// 面板内的小提示胶囊（空态/拖入态）。

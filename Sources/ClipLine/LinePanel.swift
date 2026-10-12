@@ -119,19 +119,23 @@ class ClipPanel: NSPanel {
 /// 顶部晾衣绳面板（默认样式）。
 final class LinePanel: ClipPanel {}
 
-/// 「底部卡片（Paste 式）」面板：贴可见区下沿（Dock 之上）、带投影，其余行为与晾衣绳共用基类。
+/// 「底部卡片」面板：贴屏幕底边（同 Paste 层级 24 → 浮在 Dock 之上）、带投影，其余行为与晾衣绳共用基类。
 final class PastePanel: ClipPanel {
     override init(content: NSView) {
         super.init(content: content)
         hasShadow = true
+        // 浮在 Dock 之上（Dock 层 ≈ 20）：面板下缘与 Dock 区域重叠，卡片要盖在 Dock 上沿。
+        level = .mainMenu
     }
 
-    /// 版式参照 Paste 快捷面板实拍：左右各留 6pt、贴可见区下沿（`~/claude/projects/common/2026-10-12/paste样式逆向/REFERENCE.md`）。
+    /// 版式按 Paste 快捷面板实拍：全屏宽减左右 6pt、**贴屏幕底边**（不是 visibleFrame，
+    /// 底部与 Dock 重叠、卡片下沿在 Dock 之上）；见 ~/claude/projects/common/2026-10-12/paste样式逆向/。
     override func placeOnScreen(_ screen: NSScreen? = nil) {
-        guard let visible = (screen ?? LinePanel.screenUnderPointer())?.visibleFrame else { return }
-        let width = visible.width - PastePanelView.sideMargin * 2
-        let target = NSRect(x: visible.minX + PastePanelView.sideMargin, y: visible.minY,
-                            width: width, height: PastePanelView.panelHeight)
-        if frame != target { setFrame(target, display: true) }
+        guard let target = screen ?? LinePanel.screenUnderPointer() else { return }
+        let frame = target.frame
+        let rect = NSRect(x: frame.minX + PastePanelView.sideMargin, y: frame.minY,
+                          width: frame.width - PastePanelView.sideMargin * 2,
+                          height: PastePanelView.panelHeight)
+        if self.frame != rect { setFrame(rect, display: true) }
     }
 }
