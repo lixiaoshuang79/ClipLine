@@ -1,28 +1,39 @@
 import AppKit
 
-/// 屏幕取字的结果面板：识别完成后把文字内容摆在选区旁，供核对与再复制。
-/// 交互对齐 Shottr 的确认气泡惯例：屏幕取字结束自动进剪贴板，面板只是可见的确认 + 内容回看；
-/// 点面板外、Esc、或按钮都关闭；不抢前台 App 的焦点（nonactivating，仅在点击内容时才取键盘）。
+/// 屏幕取字完成后的顶部确认卡片（对齐 Shottr 的 OCR 确认弹窗习惯）：
+/// 屏幕顶部居中一张小卡片——青色图标 +「已识别并复制到剪贴板 · N 字」+ 识别文本前两行（放不下就底部渐隐），
+/// 文本里还有换行时给一个「去换行」按钮（同 Shottr 的 Cut Breaks，点了重拷去换行版本）。
+/// 点卡片外 / Esc / × 收起；不抢前台 App 的焦点；识别文本照旧自动进剪贴板与剪贴板绳历史。
 final class OcrResultPanel: NSPanel {
-    private let text: String
+    private var text: String
     private var outsideMonitor: Any?
+    private var statusLabel: NSTextField!
+    private var previewLabel: NSTextField!
+    private var breaksButton: NSButton?
 
-    init(text: String, near rect: NSRect, on screen: NSScreen) {
+    private static let cardWidth: CGFloat = 440
+    private static let pad: CGFloat = 12
+    private static let previewMaxHeight: CGFloat = 34   // 两行 12pt
+    private static let statusHeight: CGFloat = 17
+
+    init(text: String, on screen: NSScreen) {
         self.text = text
-        let width: CGFloat = 460
-        let inset: CGFloat = 14
-        let textWidth = width - inset * 2
-        let font = NSFont.systemFont(ofSize: 13)
-        let header: CGFloat = 15
-        let footer: CGFloat = 26
-        let bounding = (text as NSString).boundingRect(
-            with: NSSize(width: textWidth, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading],
-            attributes: [.font: font])
-        let textHeight = min(max(ceil(bounding.height) + 2, 20), 300)
-        let height = inset + header + 6 + textHeight + 10 + footer + inset
 
-        super.init(contentRect: NSRect(origin: .zero, size: NSSize(width: width, height: height)),
+        let textX = Self.pad + 18 + 10
+        let hasBreaks = text.contains("\n")
+        let rightZone: CGFloat = 26 + (hasBreaks ? 74 : 0)
+        let previewWidth = Self.cardWidth - textX - Self.pad - rightZone
+        let font = NSFont.systemFont(ofSize: 12)
+        let measured = ceil((text as NSString).boundingRect(
+            with: NSSize(width: previewWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font]).height)
+        let previewHeight = min(max(measured, 15), Self.previewMaxHeight)
+        let truncated = measured > Self.previewMaxHeight + 0.5
+        let rowHeight = max(previewHeight, hasBreaks ? 22 : 0)
+        let height = Self.pad + Self.statusHeight + 4 + rowHeight + Self.pad
+
+        super.init(contentRect: NSRect(origin: .zero, size: NSSize(width: Self.cardWidth, height: height)),
                    styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         isOpaque = false
         backgroundColor = .clear
@@ -33,7 +44,7 @@ final class OcrResultPanel: NSPanel {
         animationBehavior = .none
         becomesKeyOnlyIfNeeded = true
 
-        let effect = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        let effect = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: Self.cardWidth, height: height))
         effect.material = .popover
         effect.blendingMode = .behindWindow
         effect.state = .active
@@ -43,68 +54,70 @@ final class OcrResultPanel: NSPanel {
         effect.layer?.borderWidth = 1
         effect.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.6).cgColor
 
-        let label = NSTextField(labelWithString: "已复制到剪贴板 · \(text.count) 字")
-        label.font = .systemFont(ofSize: 11, weight: .medium)
-        label.textColor = .secondaryLabelColor
-        label.frame = NSRect(x: inset, y: height - inset - header, width: textWidth, height: header)
-        effect.addSubview(label)
+        // 图标：屏幕取字的青色标识（对齐卡片体系里 .screenText 的色相）。
+        let icon = NSImageView(frame: NSRect(x: Self.pad, y: height - Self.pad - 18, width: 18, height: 18))
+        icon.image = NSImage(systemSymbolName: "text.viewfinder", accessibilityDescription: nil)
+        icon.contentTintColor = NSColor(calibratedHue: 195.0 / 360, saturation: 0.42, brightness: 0.62, alpha: 1)
+        effect.addSubview(icon)
 
-        let scroll = NSScrollView(frame: NSRect(x: inset, y: 10 + footer + inset,
-                                                width: textWidth, height: textHeight))
-        scroll.drawsBackground = false
-        scroll.hasVerticalScroller = true
-        scroll.scrollerStyle = .overlay
-        scroll.autohidesScrollers = true
-        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: scroll.contentSize.width, height: textHeight))
-        textView.string = text
-        textView.font = font
-        textView.textColor = .labelColor
-        textView.drawsBackground = false
-        textView.isEditable = false
-        textView.isSelectable = true
-        textView.minSize = NSSize(width: 0, height: 0)
-        textView.maxSize = NSSize(width: textWidth, height: .greatestFiniteMagnitude)
-        textView.isVerticallyResizable = true
-        textView.isHorizontallyResizable = false
-        textView.autoresizingMask = [.width]
-        textView.textContainer?.containerSize = NSSize(width: textWidth, height: .greatestFiniteMagnitude)
-        textView.textContainer?.widthTracksTextView = true
-        textView.textContainerInset = .zero
-        textView.textContainer?.lineFragmentPadding = 0
-        scroll.documentView = textView
-        effect.addSubview(scroll)
+        statusLabel = NSTextField(labelWithString: "已识别并复制到剪贴板 · \(text.count) 字")
+        statusLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        statusLabel.textColor = .secondaryLabelColor
+        statusLabel.lineBreakMode = .byTruncatingTail
+        statusLabel.frame = NSRect(x: textX, y: height - Self.pad - Self.statusHeight,
+                                   width: previewWidth, height: Self.statusHeight)
+        effect.addSubview(statusLabel)
 
-        let closeButton = FirstMouseButton(title: "关闭", target: self, action: #selector(closeTapped(_:)))
-        let copyButton = FirstMouseButton(title: "全部复制", target: self, action: #selector(copyAllTapped(_:)))
-        for button in [closeButton, copyButton] {
+        let close = FirstMouseButton(image: NSImage(systemSymbolName: "xmark", accessibilityDescription: "关闭")!,
+                                     target: self, action: #selector(closeTapped(_:)))
+        close.isBordered = false
+        close.contentTintColor = .secondaryLabelColor
+        close.frame = NSRect(x: Self.cardWidth - Self.pad - 18, y: height - Self.pad - 16.5, width: 18, height: 18)
+        effect.addSubview(close)
+
+        // 预览：最多两行，超高底部渐隐（不用省略号）；超长部分靠容器裁切，标签按顶部对齐摆放。
+        let container = NSView(frame: NSRect(x: textX, y: Self.pad + (rowHeight - previewHeight) / 2,
+                                             width: previewWidth, height: previewHeight))
+        container.wantsLayer = true
+        container.layer?.masksToBounds = true
+        previewLabel = NSTextField(wrappingLabelWithString: text)
+        previewLabel.font = font
+        previewLabel.textColor = .labelColor
+        previewLabel.frame = NSRect(x: 0, y: previewHeight - measured, width: previewWidth, height: measured)
+        container.addSubview(previewLabel)
+        if truncated {
+            let fade = CAGradientLayer()
+            fade.frame = container.bounds
+            fade.colors = [NSColor.black.cgColor, NSColor.black.cgColor, NSColor.clear.cgColor]
+            fade.locations = [0, 0.72, 1]
+            container.layer?.mask = fade
+        }
+        effect.addSubview(container)
+
+        if hasBreaks {
+            let button = FirstMouseButton(title: "去换行", target: self, action: #selector(cutBreaksTapped(_:)))
             button.bezelStyle = .rounded
             button.controlSize = .small
             button.font = .systemFont(ofSize: 11.5)
             button.sizeToFit()
+            button.setFrameOrigin(NSPoint(x: Self.cardWidth - Self.pad - button.frame.width,
+                                          y: Self.pad + (rowHeight - button.frame.height) / 2))
+            breaksButton = button
+            effect.addSubview(button)
         }
-        let buttonY = inset + (footer - closeButton.frame.height) / 2
-        closeButton.setFrameOrigin(NSPoint(x: width - inset - closeButton.frame.width, y: buttonY))
-        copyButton.setFrameOrigin(NSPoint(x: closeButton.frame.minX - 8 - copyButton.frame.width, y: buttonY))
-        effect.addSubview(closeButton)
-        effect.addSubview(copyButton)
 
         contentView = effect
 
-        // 默认贴在选区下方 8pt；下方放不下翻到上方；左右夹在屏幕内。
-        var x = screen.frame.minX + rect.minX
-        x = min(max(x, screen.frame.minX + 8), screen.frame.maxX - width - 8)
-        var y = screen.frame.minY + rect.minY - height - 8
-        if y < screen.frame.minY + 8 {
-            y = screen.frame.minY + rect.maxY + 8
-            if y + height > screen.frame.maxY - 8 { y = screen.frame.maxY - height - 8 }
-        }
-        setFrameOrigin(NSPoint(x: x, y: y))
+        // 顶部居中（菜单栏之下，同 Shottr 的位置）。
+        let visible = screen.visibleFrame
+        let y = max(visible.maxY - height - 8, visible.minY + 8)
+        setFrameOrigin(NSPoint(x: visible.midX - Self.cardWidth / 2, y: y))
     }
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
-    /// 上屏并挂"点外面关闭"的全局监视。
+    /// 上屏并挂「点外面关闭」的全局监视。
     func present() {
         orderFrontRegardless()
         outsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
@@ -132,23 +145,26 @@ final class OcrResultPanel: NSPanel {
         dismiss()
     }
 
-    @objc private func copyAllTapped(_ sender: Any?) {
-        let rep: [NSPasteboard.PasteboardType: Data] = [.string: Data(text.utf8)]
+    /// 同 Shottr 的 Cut Breaks：把当前识别文本去掉换行再复制一份（卡片保留，预览同步换掉）。
+    @objc private func cutBreaksTapped(_ sender: Any?) {
+        let stripped = Ocr.removeBreaks(text)
+        let rep: [NSPasteboard.PasteboardType: Data] = [.string: Data(stripped.utf8)]
         Paster.copyToPasteboard([rep])
-        dismiss()
+        text = stripped
+        statusLabel.stringValue = "已复制去换行文本 · \(stripped.count) 字"
+        previewLabel.stringValue = stripped
+        breaksButton?.isHidden = true
     }
 
     // MARK: 调试
 
-    /// 调试：CLIPLINE_OCR_RESULT_SNAPSHOT=<png> 时展示示例面板、自捕获该窗口后退出
+    /// 调试：CLIPLINE_OCR_RESULT_SNAPSHOT=<png> 时展示示例卡片、自捕获该窗口后退出
     /// （抓自己的窗口不需要屏幕录制权限）。
     static func snapshotDemoIfRequested() -> Bool {
         guard let path = ProcessInfo.processInfo.environment["CLIPLINE_OCR_RESULT_SNAPSHOT"] else { return false }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             guard let screen = NSScreen.main ?? NSScreen.screens.first else { NSApp.terminate(nil); return }
-            let rect = NSRect(x: (screen.frame.width - 400) / 2, y: screen.frame.height / 2 - 100,
-                              width: 400, height: 80)
-            let panel = OcrResultPanel(text: demoText, near: rect, on: screen)
+            let panel = OcrResultPanel(text: demoText, on: screen)
             panel.present()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
                 let windowID = CGWindowID(panel.windowNumber)

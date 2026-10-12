@@ -71,7 +71,7 @@ final class ScreenTextCapture {
                     DispatchQueue.main.async {
                         guard let self else { return }
                         if let text, !text.isEmpty {
-                            self.deliver(text, near: rect, on: screen)
+                            self.deliver(text, on: screen)
                         } else {
                             self.showToast("没识别到文字", near: rect, on: screen)
                         }
@@ -135,16 +135,16 @@ final class ScreenTextCapture {
         return deltas[min(deltas.count - 1, Int(Double(deltas.count) * 0.9))]
     }
 
-    private func deliver(_ text: String, near rect: NSRect, on screen: NSScreen) {
+    private func deliver(_ text: String, on screen: NSScreen) {
         let item = ClipItem(kind: .text(text), source: .screenText, copiedAt: Date(),
                             snapshot: [[.string: Data(text.utf8)]], fingerprint: "t:" + text)
         if let snapshot = item.snapshot { Paster.copyToPasteboard(snapshot) }
         store.ingestScreenText(item)
-        // 结果面板：把识别出的内容摆在选区旁供核对/再复制。
+        // 顶部确认卡片（同 Shottr）。
         // 用户已经在做下一次取字（遮罩在场）时不打扰——内容仍在剪贴板与剪贴板绳里。
         guard overlay == nil else { return }
         resultPanel?.dismiss()
-        let panel = OcrResultPanel(text: text, near: rect, on: screen)
+        let panel = OcrResultPanel(text: text, on: screen)
         resultPanel = panel
         panel.present()
     }
@@ -271,17 +271,13 @@ private final class SelectionView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        // 暗底 + 镂空选区（even-odd 挖洞）。
-        let dim = NSBezierPath(rect: bounds)
-        if selection.width > 0, selection.height > 0 {
-            dim.append(NSBezierPath(rect: selection))
-            dim.windingRule = .evenOdd
-        }
-        NSColor.black.withAlphaComponent(0.35).setFill()
-        dim.fill()
-
+        // 不遮暗屏幕（对齐 Shottr 的框选观感）：只画选区框线——外深内白两圈，深浅底色都看得清。
         guard selection.width > 0, selection.height > 0 else { return }
-        NSColor.white.withAlphaComponent(0.95).setStroke()
+        NSColor.black.withAlphaComponent(0.5).setStroke()
+        let outer = NSBezierPath(rect: selection.insetBy(dx: -1, dy: -1))
+        outer.lineWidth = 3.5
+        outer.stroke()
+        NSColor.white.setStroke()
         let border = NSBezierPath(rect: selection.insetBy(dx: 0.75, dy: 0.75))
         border.lineWidth = 1.5
         border.stroke()
