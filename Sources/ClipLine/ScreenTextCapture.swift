@@ -9,6 +9,8 @@ final class ScreenTextCapture {
     private var overlay: OverlayPanel?
     private var toast: NSPanel?
     private var resultPanel: OcrResultPanel?
+    /// 取字前的前台 App；取字结束/取消后请回来。
+    private var previousApp: NSRunningApplication?
     private let store: ClipStore
 
     init(store: ClipStore) {
@@ -19,23 +21,36 @@ final class ScreenTextCapture {
         // 开始新一次取字先收起上次的结果面板——否则它会被拍进这次的选区。
         resultPanel?.dismiss()
         resultPanel = nil
-        guard overlay == nil else { return }
+        // 取字进行中再按一次热键 = 取消本次框选。
+        if overlay != nil {
+            dismissOverlay()
+            return
+        }
         guard CGPreflightScreenCaptureAccess() else {
             _ = CGRequestScreenCaptureAccess()
             guideToPermission()
             return
         }
         guard let screen = LinePanel.screenUnderPointer() ?? NSScreen.main else { return }
+        // 取字期间把自己变成前台（截图工具通例，Shottr 也如此）：只有这样十字光标才起得来、
+        // Esc 才稳；结束或取消后把原前台 App 请回去。
+        let front = NSWorkspace.shared.frontmostApplication
+        previousApp = (front?.processIdentifier == getpid()) ? nil : front
+        NSApp.activate()
         let overlay = OverlayPanel(screen: screen)
         overlay.onFinish = { [weak self] rect in self?.finish(rect: rect, screen: screen) }
         overlay.onCancel = { [weak self] in self?.dismissOverlay() }
         self.overlay = overlay
         overlay.makeKeyAndOrderFront(nil)
+        NSCursor.crosshair.set()
     }
 
     private func dismissOverlay() {
         overlay?.orderOut(nil)
         overlay = nil
+        // 取字期间我们短暂做过前台，把原 App 请回来。
+        previousApp?.activate(options: [])
+        previousApp = nil
     }
 
     private func finish(rect: NSRect, screen: NSScreen) {
@@ -239,6 +254,7 @@ private final class OverlayPanel: NSPanel {
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         isReleasedWhenClosed = false
         animationBehavior = .none
+        acceptsMouseMovedEvents = true
         let selection = SelectionView(frame: NSRect(origin: .zero, size: screen.frame.size))
         selection.onFinish = { [weak self] rect in self?.onFinish?(rect) }
         selection.onCancel = { [weak self] in self?.onCancel?() }
@@ -264,6 +280,11 @@ private final class SelectionView: NSView {
 
     override func resetCursorRects() {
         addCursorRect(bounds, cursor: .crosshair)
+    }
+
+    /// 保险丝：光标 rect 在个别状态下不生效时，鼠标在遮罩上移动也主动设十字光标。
+    override func mouseMoved(with event: NSEvent) {
+        NSCursor.crosshair.set()
     }
 
     override func mouseDown(with event: NSEvent) {
