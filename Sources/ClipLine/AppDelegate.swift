@@ -71,15 +71,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["CLIPLINE_DEMO"] == "1" || env["CLIPLINE_SHOW"] == "1" { reveal() }
         // 调试：CLIPLINE_SETTINGS=1 直接开设置窗口（截图/自查用）。
         if env["CLIPLINE_SETTINGS"] == "1" { openSettings() }
-        // 调试：CLIPLINE_OCR_RUN_DEBUG=preflight 静默体检屏幕录制权限（不弹任何窗），结果写 /tmp/clipline-preflight.txt。
+        // 调试：CLIPLINE_OCR_RUN_DEBUG=preflight 静默体检屏幕录制/辅助功能权限（不弹任何窗），
+        // 结果写 /tmp/clipline-preflight.txt。
         if env["CLIPLINE_OCR_RUN_DEBUG"] == "preflight" {
             let preflight = CGPreflightScreenCaptureAccess()
+            let accessibility = AXIsProcessTrusted()
             var capture = "未尝试（预检为假）"
             if preflight {
                 capture = CGDisplayCreateImage(CGMainDisplayID(), rect: CGRect(x: 0, y: 0, width: 4, height: 4))
                     .map { "成功 \($0.width)x\($0.height)" } ?? "失败(nil)"
             }
-            try? "preflight=\(preflight) capture=\(capture)\n"
+            try? "screenRecording=\(preflight) capture=\(capture) accessibility=\(accessibility)\n"
                 .write(to: URL(fileURLWithPath: "/tmp/clipline-preflight.txt"), atomically: true, encoding: .utf8)
             NSApp.terminate(nil)
             return
@@ -224,8 +226,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            NSWorkspace.shared.frontmostApplication?.processIdentifier == getpid() {
             previousApp.activate(options: [])
         }
+        // 没有「辅助功能」权限时合成不了 ⌘V：第一次先说清原因（内容已在剪贴板，可手动 ⌘V），
+        // 之后不再打扰——避免"点了卡片只弹一个看不懂的系统窗"。
+        if !AXIsProcessTrusted(), !Self.explainedAccessibility {
+            Self.explainedAccessibility = true
+            NSApp.activate()
+            let alert = NSAlert()
+            alert.messageText = "让 ClipLine 直接粘贴，需要「辅助功能」权限"
+            alert.informativeText = """
+            内容已经复制到剪贴板了，现在手动按 ⌘V 也能粘贴。
+
+            想要"点卡片就自动粘贴"，请在 系统设置 → 隐私与安全性 → 辅助功能 里打开 ClipLine，然后重启本应用。
+            """
+            alert.addButton(withTitle: "打开设置")
+            alert.addButton(withTitle: "知道了")
+            if alert.runModal() == .alertFirstButtonReturn,
+               let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                NSWorkspace.shared.open(url)
+            }
+            return
+        }
         Paster.synthesizePaste()
     }
+
+    /// 辅助功能说明弹窗每次启动只弹一次。
+    private static var explainedAccessibility = false
 
     private func installOutsideMonitor() {
         guard outsideMonitor == nil else { return }
