@@ -166,6 +166,29 @@ final class ScreenTextCapture {
         }
     }
 
+    /// 调试：CLIPLINE_SELECTION_SNAPSHOT=<png> 展示取字遮罩的提示态，抓屏幕顶部一条后退出
+    /// （普通在屏抓取，需要屏幕录制权限；App 自身已授）。
+    static func snapshotHintIfRequested() -> Bool {
+        guard let path = ProcessInfo.processInfo.environment["CLIPLINE_SELECTION_SNAPSHOT"] else { return false }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            guard let screen = LinePanel.screenUnderPointer() ?? NSScreen.main else { NSApp.terminate(nil); return }
+            let overlay = OverlayPanel(screen: screen)
+            overlay.orderFrontRegardless()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                let mainHeight = NSScreen.screens.first?.frame.height ?? screen.frame.height
+                let strip = CGRect(x: screen.frame.midX - 460,
+                                   y: mainHeight - screen.frame.maxY + 10,
+                                   width: 920, height: 150)
+                if let image = CGWindowListCreateImage(strip, .optionOnScreenOnly, kCGNullWindowID, [.bestResolution]),
+                   let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) {
+                    try? data.write(to: URL(fileURLWithPath: path))
+                }
+                NSApp.terminate(nil)
+            }
+        }
+        return true
+    }
+
     /// 选区附近的轻提示，1.6 秒后自动消失。
     private func showToast(_ message: String, near rect: NSRect, on screen: NSScreen) {
         toast?.orderOut(nil)
@@ -271,7 +294,22 @@ private final class SelectionView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        // 不遮暗屏幕（对齐 Shottr 的框选观感）：只画选区框线——外深内白两圈，深浅底色都看得清。
+        // 还没开始拖框：给一句提示——不压暗屏幕，需要说明已进入取字模式（同 Shottr 的框选提示）。
+        if start == nil {
+            let hint = "拖框选住要识别的文字 · Esc 取消" as NSString
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 12.5, weight: .medium),
+                .foregroundColor: NSColor.white,
+            ]
+            let size = hint.size(withAttributes: attrs)
+            let pill = NSRect(x: (bounds.width - size.width) / 2 - 14, y: bounds.height - 72,
+                              width: size.width + 28, height: size.height + 11)
+            NSColor.black.withAlphaComponent(0.72).setFill()
+            NSBezierPath(roundedRect: pill, xRadius: pill.height / 2, yRadius: pill.height / 2).fill()
+            hint.draw(at: NSPoint(x: pill.minX + 14, y: pill.minY + 5.5), withAttributes: attrs)
+            return
+        }
+        // 拖框中：不遮暗屏幕（对齐 Shottr 的框选观感），只画选区框线——外深内白两圈，深浅底色都看得清。
         guard selection.width > 0, selection.height > 0 else { return }
         NSColor.black.withAlphaComponent(0.5).setStroke()
         let outer = NSBezierPath(rect: selection.insetBy(dx: -1, dy: -1))

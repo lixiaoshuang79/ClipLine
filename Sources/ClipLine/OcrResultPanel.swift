@@ -12,15 +12,15 @@ final class OcrResultPanel: NSPanel {
     private var breaksButton: NSButton?
     private let screenVisibleFrame: NSRect
 
-    private static let pad: CGFloat = 12
-    private static let iconSide: CGFloat = 20
-    private static let cardHeight: CGFloat = 44
+    private static let pad: CGFloat = 14
+    private static let iconSide: CGFloat = 36
+    private static let cardHeight: CGFloat = 64
 
     init(text: String, on screen: NSScreen) {
         self.text = text
         self.screenVisibleFrame = screen.visibleFrame
 
-        super.init(contentRect: NSRect(x: 0, y: 0, width: 260, height: Self.cardHeight),
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 300, height: Self.cardHeight),
                    styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         isOpaque = false
         backgroundColor = .clear
@@ -30,17 +30,15 @@ final class OcrResultPanel: NSPanel {
         isReleasedWhenClosed = false
         animationBehavior = .none
         becomesKeyOnlyIfNeeded = true
-        // 同 Shottr：这张卡片固定深色（不随系统明暗变），白字 + HUD 质感才立得住。
-        appearance = NSAppearance(named: .darkAqua)
 
-        // 固定深色底（同 Shottr 的确认卡）：不依赖材质随明暗/背景变化，所见即所得。
-        let effect = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: Self.cardHeight))
+        // 跟随系统明暗的半透明卡（同 Shottr 的确认卡：浅色下近白、深色下深灰），大圆角 + 软阴影。
+        let effect = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: 300, height: Self.cardHeight))
+        effect.material = .popover
+        effect.blendingMode = .behindWindow
+        effect.state = .active
         effect.wantsLayer = true
-        effect.layer?.backgroundColor = NSColor(white: 0.12, alpha: 0.96).cgColor
-        effect.layer?.cornerRadius = 11
+        effect.layer?.cornerRadius = 16
         effect.layer?.masksToBounds = true
-        effect.layer?.borderWidth = 1
-        effect.layer?.borderColor = NSColor.white.withAlphaComponent(0.08).cgColor
 
         // 左边 App 图标（同 Shottr 放自家 logo 的做法）。
         iconView = NSImageView(frame: .zero)
@@ -49,24 +47,18 @@ final class OcrResultPanel: NSPanel {
         effect.addSubview(iconView)
 
         messageLabel = NSTextField(labelWithString: "已识别并复制到剪贴板")
-        messageLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
-        messageLabel.textColor = .white
+        messageLabel.font = .systemFont(ofSize: 14)
+        messageLabel.textColor = .labelColor
         messageLabel.lineBreakMode = .byTruncatingTail
         effect.addSubview(messageLabel)
 
-        // 文本里还有换行时才给「去换行」——白底深字的小药丸，同 Shottr 的 Cut Breaks。
+        // 文本里还有换行时才给「去换行」——同 Shottr 的 Cut Breaks。
         if text.contains("\n") {
             let button = FirstMouseButton(title: "去换行", target: self, action: #selector(cutBreaksTapped(_:)))
-            button.isBordered = false
-            button.wantsLayer = true
-            button.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.92).cgColor
-            button.layer?.cornerRadius = 7
-            button.attributedTitle = NSAttributedString(string: "去换行", attributes: [
-                .font: NSFont.systemFont(ofSize: 11.5, weight: .semibold),
-                .foregroundColor: NSColor(calibratedWhite: 0.12, alpha: 1),
-            ])
+            button.bezelStyle = .rounded
+            button.controlSize = .regular
+            button.font = .systemFont(ofSize: 13)
             button.sizeToFit()
-            button.frame.size = NSSize(width: max(button.frame.width + 20, 58), height: 22)
             breaksButton = button
             effect.addSubview(button)
         }
@@ -84,13 +76,13 @@ final class OcrResultPanel: NSPanel {
         // 用 sizeToFit 实测宽度——按字体度量手算会短一截，文字被截断。
         messageLabel.sizeToFit()
         let textWidth = messageLabel.frame.width
-        var width = Self.pad * 2 + Self.iconSide + 9 + textWidth
-        if let button = breaksButton { width += 10 + button.frame.width }
-        width = max(ceil(width), 218)
+        var width = Self.pad * 2 + Self.iconSide + 12 + textWidth
+        if let button = breaksButton { width += 12 + button.frame.width }
+        width = max(ceil(width), 260)
         setContentSize(NSSize(width: width, height: height))
 
         iconView.frame = NSRect(x: Self.pad, y: (height - Self.iconSide) / 2, width: Self.iconSide, height: Self.iconSide)
-        messageLabel.frame.origin = NSPoint(x: Self.pad + Self.iconSide + 9,
+        messageLabel.frame.origin = NSPoint(x: Self.pad + Self.iconSide + 12,
                                             y: (height - messageLabel.frame.height) / 2)
         if let button = breaksButton {
             button.setFrameOrigin(NSPoint(x: width - Self.pad - button.frame.width,
