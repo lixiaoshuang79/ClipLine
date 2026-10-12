@@ -8,6 +8,7 @@ final class ScreenTextCapture {
 
     private var overlay: OverlayPanel?
     private var toast: NSPanel?
+    private var resultPanel: OcrResultPanel?
     private let store: ClipStore
 
     init(store: ClipStore) {
@@ -15,6 +16,9 @@ final class ScreenTextCapture {
     }
 
     func begin() {
+        // 开始新一次取字先收起上次的结果面板——否则它会被拍进这次的选区。
+        resultPanel?.dismiss()
+        resultPanel = nil
         guard overlay == nil else { return }
         guard CGPreflightScreenCaptureAccess() else {
             _ = CGRequestScreenCaptureAccess()
@@ -136,10 +140,13 @@ final class ScreenTextCapture {
                             snapshot: [[.string: Data(text.utf8)]], fingerprint: "t:" + text)
         if let snapshot = item.snapshot { Paster.copyToPasteboard(snapshot) }
         store.ingestScreenText(item)
-        // 摘要不用省略号（会被误读成识别结果里带了"…"）：短文本给内容，长文本给字数。
-        let flat = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let preview = !flat.contains(where: \.isNewline) && flat.count <= 18 ? "「\(flat)」" : "\(flat.count) 字"
-        showToast("已取字 \(preview) · 已复制", near: rect, on: screen)
+        // 结果面板：把识别出的内容摆在选区旁供核对/再复制。
+        // 用户已经在做下一次取字（遮罩在场）时不打扰——内容仍在剪贴板与剪贴板绳里。
+        guard overlay == nil else { return }
+        resultPanel?.dismiss()
+        let panel = OcrResultPanel(text: text, near: rect, on: screen)
+        resultPanel = panel
+        panel.present()
     }
 
     private func guideToPermission() {

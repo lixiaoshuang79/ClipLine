@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if OcrProbe.runIfRequested() { return }   // CLIPLINE_OCR_PROBE=1：抓屏对拍照，不走正常 UI
+        if OcrResultPanel.snapshotDemoIfRequested() { return }   // CLIPLINE_OCR_RESULT_SNAPSHOT=<png>：结果面板自截图
         let view = NSHostingView(rootView: LineView(store: store))
         panel = LinePanel(content: view)
         panel.placeOnScreen()
