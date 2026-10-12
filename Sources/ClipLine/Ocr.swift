@@ -84,6 +84,35 @@ enum Ocr {
         return out.joined(separator: "\n")
     }
 
+    /// 「去换行」按钮（同 Shottr 的 Cut Breaks）：用户明确要一行，所有换行都拿掉。
+    /// 两侧都是 CJK、或挨着全角标点时直接接；行尾连字符接小写去掉连字符；其余补一个空格（中英文之间同样留空格）。
+    static func joinLines(_ text: String) -> String {
+        let lines = text.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        var out = ""
+        for line in lines {
+            guard let prev = out.unicodeScalars.last, let next = line.unicodeScalars.first else {
+                out = line
+                continue
+            }
+            if (isCJK(prev) && isCJK(next)) || isFullwidthPunctuation(prev) || isFullwidthPunctuation(next) {
+                out += line
+            } else if prev == "-", let first = line.first, first.isLowercase {
+                out = String(out.dropLast()) + line
+            } else {
+                out += " " + line
+            }
+        }
+        return out
+    }
+
+    private static func isFullwidthPunctuation(_ scalar: Unicode.Scalar) -> Bool {
+        (0x3000...0x303F).contains(scalar.value) || (0xFF00...0xFF0F).contains(scalar.value)
+            || (0xFF1A...0xFF20).contains(scalar.value) || (0xFF3B...0xFF40).contains(scalar.value)
+            || (0xFF5B...0xFF65).contains(scalar.value)
+    }
+
     private static func isCJK(_ scalar: Unicode.Scalar) -> Bool {
         (0x4E00...0x9FFF).contains(scalar.value)        // 基本汉字
             || (0x3400...0x4DBF).contains(scalar.value) // 扩展 A

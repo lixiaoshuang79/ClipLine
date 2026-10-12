@@ -1,167 +1,375 @@
 import AppKit
 
-/// 屏幕取字完成后的顶部确认卡片——形态对齐 Shottr 的 OCR 确认弹窗：
-/// 顶部居中一张深色小卡（HUD 材质）：App 图标 +「已识别并复制到剪贴板」+ 右侧「去换行」按钮
-/// （同 Shottr 的 Cut Breaks，仅当文本里还有换行时出现；点了重拷去换行版本）。
-/// 点卡片外 / Esc 收起；不抢前台 App 的焦点；识别文本照旧自动进剪贴板与剪贴板绳历史。
+/// 屏幕取字的顶部确认卡——照 Shottr 的 OCR 吐司做：屏幕顶部居中一张浅色小卡（跟随系统明暗），
+/// 左侧 App 图标，两行字（标题 + 识别文字预览），右侧灰色圆角「去换行」（= Shottr 的 Cut Breaks，
+/// 仅当文本含换行时出现）。约 4 秒后自动淡出，指针停在卡上时暂停计时；点卡片本体即收起。
+/// 不抢前台 App 的焦点。松手即亮「正在识别」，识别完原地换成结果。
 final class OcrResultPanel: NSPanel {
-    private var text: String
-    private var outsideMonitor: Any?
-    private var iconView: NSImageView!
-    private var messageLabel: NSTextField!
-    private var breaksButton: NSButton?
+    enum State: Equatable {
+        case working
+        case copied(String)
+        case copiedWithoutBreaks(String)
+        case empty
+        case tooLarge
+    }
+
+    var onCutBreaks: (() -> Void)?
+    private(set) var state: State = .working
+
+    private let screenFrame: NSRect
     private let screenVisibleFrame: NSRect
+    private let card = ToastBackground()
+    private let iconView = NSImageView()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let detailLabel = NSTextField(labelWithString: "")
+    private let spinner = NSProgressIndicator()
+    private lazy var breaksButton = PillButton(title: "去换行", target: self, action: #selector(cutBreaksTapped))
+    private var hideWork: DispatchWorkItem?
+    private var hovering = false
+    private var presented = false
 
-    private static let pad: CGFloat = 14
-    private static let iconSide: CGFloat = 36
-    private static let cardHeight: CGFloat = 64
+    // 尺寸取自 Shottr 实机截图的量测（1512pt 宽屏上卡高 ≈54pt、图标 24pt、按钮高 28pt、卡顶距菜单栏 ≈22pt）。
+    private static let height: CGFloat = 54
+    private static let padding: CGFloat = 15
+    private static let iconSide: CGFloat = 24
+    private static let topGap: CGFloat = 22
+    private static let maxTextWidth: CGFloat = 250
 
-    init(text: String, on screen: NSScreen) {
-        self.text = text
-        self.screenVisibleFrame = screen.visibleFrame
-
-        super.init(contentRect: NSRect(x: 0, y: 0, width: 300, height: Self.cardHeight),
+    init(screen: NSScreen) {
+        screenFrame = screen.frame
+        screenVisibleFrame = screen.visibleFrame
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 300, height: Self.height),
                    styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         isOpaque = false
         backgroundColor = .clear
         hasShadow = true
-        level = .screenSaver
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        level = .statusBar
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         isReleasedWhenClosed = false
         animationBehavior = .none
+        hidesOnDeactivate = false
         becomesKeyOnlyIfNeeded = true
 
-        // 跟随系统明暗的半透明卡（同 Shottr 的确认卡：浅色下近白、深色下深灰），大圆角 + 软阴影。
-        let effect = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: 300, height: Self.cardHeight))
-        effect.material = .popover
-        effect.blendingMode = .behindWindow
-        effect.state = .active
-        effect.wantsLayer = true
-        effect.layer?.cornerRadius = 16
-        effect.layer?.masksToBounds = true
-
-        // 左边 App 图标（同 Shottr 放自家 logo 的做法）。
-        iconView = NSImageView(frame: .zero)
         iconView.image = NSApp.applicationIconImage
         iconView.imageScaling = .scaleProportionallyUpOrDown
-        effect.addSubview(iconView)
-
-        messageLabel = NSTextField(labelWithString: "已识别并复制到剪贴板")
-        messageLabel.font = .systemFont(ofSize: 14)
-        messageLabel.textColor = .labelColor
-        messageLabel.lineBreakMode = .byTruncatingTail
-        effect.addSubview(messageLabel)
-
-        // 文本里还有换行时才给「去换行」——同 Shottr 的 Cut Breaks。
-        if text.contains("\n") {
-            let button = FirstMouseButton(title: "去换行", target: self, action: #selector(cutBreaksTapped(_:)))
-            button.bezelStyle = .rounded
-            button.controlSize = .regular
-            button.font = .systemFont(ofSize: 13)
-            button.sizeToFit()
-            breaksButton = button
-            effect.addSubview(button)
-        }
-
-        contentView = effect
-        applyLayout()
+        titleLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        titleLabel.textColor = .labelColor
+        titleLabel.lineBreakMode = .byTruncatingTail
+        detailLabel.font = .systemFont(ofSize: 12)
+        detailLabel.textColor = .secondaryLabelColor
+        // 截断不用省略号（会被当成识别出来的字），改成尾部渐隐。
+        detailLabel.lineBreakMode = .byClipping
+        detailLabel.maximumNumberOfLines = 1
+        detailLabel.wantsLayer = true
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isDisplayedWhenStopped = false
+        for view in [iconView, titleLabel, detailLabel, spinner, breaksButton] as [NSView] { card.addSubview(view) }
+        card.onHover = { [weak self] inside in self?.hoverChanged(inside) }
+        card.onClick = { [weak self] in self?.dismiss() }
+        contentView = card
     }
 
-    override var canBecomeKey: Bool { true }
+    override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
-    /// 宽度随内容收放，窗口保持顶部居中。
-    private func applyLayout() {
-        let height = Self.cardHeight
-        // 用 sizeToFit 实测宽度——按字体度量手算会短一截，文字被截断。
-        messageLabel.sizeToFit()
-        let textWidth = messageLabel.frame.width
-        var width = Self.pad * 2 + Self.iconSide + 12 + textWidth
-        if let button = breaksButton { width += 12 + button.frame.width }
-        width = max(ceil(width), 260)
+    /// 进入某个状态：首次上屏带淡入下滑，之后原地更新、保持顶部居中。
+    func show(_ next: State) {
+        state = next
+        switch next {
+        case .working:
+            setTexts("正在识别文字…", nil)
+        case .copied(let text):
+            setTexts("文字已复制到剪贴板", Self.preview(text))
+        case .copiedWithoutBreaks(let text):
+            setTexts("已复制去掉换行的文字", Self.preview(text))
+        case .empty:
+            setTexts("没有识别到文字", "换个区域再试一次")
+        case .tooLarge:
+            setTexts("选区太大", "缩小一些再试")
+        }
+        if case .working = next { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
+        if case .copied(let text) = next, text.contains("\n") {
+            breaksButton.isHidden = false
+        } else {
+            breaksButton.isHidden = true
+        }
+        layoutCard()
+        // 只淡入不动窗口框：窗口框动画会吞掉紧随其后的尺寸更新（识别中 → 已复制时卡片变宽）。
+        if !presented {
+            presented = true
+            alphaValue = 0
+            orderFrontRegardless()
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.16
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                animator().alphaValue = 1
+            }
+        }
+        scheduleHide()
+    }
+
+    func dismiss(animated: Bool = true) {
+        hideWork?.cancel()
+        hideWork = nil
+        guard isVisible else { return }
+        guard animated else {
+            orderOut(nil)
+            return
+        }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.2
+            animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            self?.orderOut(nil)
+        })
+    }
+
+    /// 预览行：换行压成空格、去首尾空白；卡片按单行截尾显示。
+    static func preview(_ text: String) -> String {
+        let flat = text.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        return String(flat.prefix(200))
+    }
+
+    // MARK: 布局
+
+    private func setTexts(_ title: String, _ detail: String?) {
+        titleLabel.stringValue = title
+        detailLabel.stringValue = detail ?? ""
+        detailLabel.isHidden = detail == nil
+    }
+
+    private func layoutCard() {
+        let height = Self.height
+        titleLabel.sizeToFit()
+        detailLabel.sizeToFit()
+        let titleWidth = ceil(titleLabel.frame.width)
+        let detailWidth = detailLabel.isHidden ? 0 : ceil(detailLabel.frame.width)
+        let textWidth = min(max(titleWidth, detailWidth), max(Self.maxTextWidth, titleWidth))
+        let textX = Self.padding + Self.iconSide + 10
+
+        var trailing: CGFloat = 0
+        if !breaksButton.isHidden {
+            breaksButton.sizeToFit()
+            trailing = 24 + breaksButton.frame.width
+        } else if case .working = state {
+            trailing = 14 + 16
+        }
+        let width = max(220, ceil(textX + textWidth + trailing + Self.padding + 1))
         setContentSize(NSSize(width: width, height: height))
+        card.frame = NSRect(x: 0, y: 0, width: width, height: height)
 
-        iconView.frame = NSRect(x: Self.pad, y: (height - Self.iconSide) / 2, width: Self.iconSide, height: Self.iconSide)
-        messageLabel.frame.origin = NSPoint(x: Self.pad + Self.iconSide + 12,
-                                            y: (height - messageLabel.frame.height) / 2)
-        if let button = breaksButton {
-            button.setFrameOrigin(NSPoint(x: width - Self.pad - button.frame.width,
-                                          y: (height - button.frame.height) / 2))
+        iconView.frame = NSRect(x: Self.padding, y: (height - Self.iconSide) / 2,
+                                width: Self.iconSide, height: Self.iconSide)
+        let titleHeight = ceil(titleLabel.frame.height)
+        if detailLabel.isHidden {
+            titleLabel.frame = NSRect(x: textX, y: (height - titleHeight) / 2, width: textWidth, height: titleHeight)
+        } else {
+            let detailHeight = ceil(detailLabel.frame.height)
+            let block = titleHeight + detailHeight
+            let bottom = (height - block) / 2
+            detailLabel.frame = NSRect(x: textX, y: bottom, width: textWidth, height: detailHeight)
+            titleLabel.frame = NSRect(x: textX, y: bottom + detailHeight, width: textWidth, height: titleHeight)
         }
+        if detailWidth > textWidth {
+            let fade = CAGradientLayer()
+            fade.frame = NSRect(origin: .zero, size: detailLabel.frame.size)
+            fade.startPoint = CGPoint(x: 0, y: 0.5)
+            fade.endPoint = CGPoint(x: 1, y: 0.5)
+            fade.colors = [NSColor.black.cgColor, NSColor.black.cgColor, NSColor.clear.cgColor]
+            fade.locations = [0, NSNumber(value: Double(max(0, (textWidth - 36) / textWidth))), 1]
+            detailLabel.layer?.mask = fade
+        } else {
+            detailLabel.layer?.mask = nil
+        }
+        if !breaksButton.isHidden {
+            breaksButton.setFrameOrigin(NSPoint(x: width - Self.padding - breaksButton.frame.width,
+                                                y: (height - breaksButton.frame.height) / 2))
+        }
+        spinner.frame = NSRect(x: width - Self.padding - 16, y: (height - 16) / 2, width: 16, height: 16)
 
-        let visible = screenVisibleFrame
-        let y = max(visible.maxY - height - 8, visible.minY + 8)
-        setFrameOrigin(NSPoint(x: visible.midX - width / 2, y: y))
+        let top = min(screenVisibleFrame.maxY, screenFrame.maxY)
+        let origin = NSPoint(x: (screenFrame.midX - width / 2).rounded(), y: top - Self.topGap - height)
+        setFrame(NSRect(origin: origin, size: NSSize(width: width, height: height)), display: true)
+        invalidateShadow()
     }
 
-    /// 上屏并挂「点外面关闭」的全局监视。
-    func present() {
-        orderFrontRegardless()
-        outsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            DispatchQueue.main.async { self?.dismiss() }
+    // MARK: 自动收起
+
+    private func scheduleHide() {
+        hideWork?.cancel()
+        hideWork = nil
+        if case .working = state { return }
+        guard !hovering else { return }
+        let delay: TimeInterval
+        switch state {
+        case .empty, .tooLarge: delay = 2.5
+        default: delay = 4
+        }
+        let work = DispatchWorkItem { [weak self] in self?.dismiss() }
+        hideWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func hoverChanged(_ inside: Bool) {
+        hovering = inside
+        if inside {
+            hideWork?.cancel()
+            hideWork = nil
+        } else {
+            scheduleHide()
         }
     }
 
-    func dismiss() {
-        if let outsideMonitor {
-            NSEvent.removeMonitor(outsideMonitor)
-            self.outsideMonitor = nil
-        }
-        orderOut(nil)
-    }
-
-    override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 { dismiss() } else { super.keyDown(with: event) }
-    }
-
-    override func cancelOperation(_ sender: Any?) {
-        dismiss()
-    }
-
-    /// 同 Shottr 的 Cut Breaks：把当前识别文本去掉换行再复制一份，卡片就地更新。
-    @objc private func cutBreaksTapped(_ sender: Any?) {
-        let stripped = Ocr.removeBreaks(text)
-        let rep: [NSPasteboard.PasteboardType: Data] = [.string: Data(stripped.utf8)]
-        Paster.copyToPasteboard([rep])
-        text = stripped
-        messageLabel.stringValue = "已复制去换行文本"
-        breaksButton?.removeFromSuperview()
-        breaksButton = nil
-        applyLayout()
+    @objc private func cutBreaksTapped() {
+        onCutBreaks?()
     }
 
     // MARK: 调试
 
-    /// 调试：CLIPLINE_OCR_RESULT_SNAPSHOT=<png> 时展示示例卡片、自捕获该窗口后退出
-    /// （抓自己的窗口不需要屏幕录制权限）。
+    /// 调试：CLIPLINE_OCR_RESULT_SNAPSHOT=<目录> 依次展示各状态、自捕获卡片窗口存 card-<状态>.png 后退出
+    /// （抓自己的窗口不需要屏幕录制权限；配 CLIPLINE_APPEARANCE=dark 看深色）。
     static func snapshotDemoIfRequested() -> Bool {
-        guard let path = ProcessInfo.processInfo.environment["CLIPLINE_OCR_RESULT_SNAPSHOT"] else { return false }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+        guard let directory = ProcessInfo.processInfo.environment["CLIPLINE_OCR_RESULT_SNAPSHOT"] else { return false }
+        try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        let states: [(String, State)] = [
+            ("working", .working),
+            ("copied", .copied(demoText)),
+            ("cut-breaks", .copiedWithoutBreaks(Ocr.joinLines(demoText))),
+            ("empty", .empty),
+        ]
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
             guard let screen = NSScreen.main ?? NSScreen.screens.first else { NSApp.terminate(nil); return }
-            let panel = OcrResultPanel(text: demoText, on: screen)
-            panel.present()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
-                let windowID = CGWindowID(panel.windowNumber)
-                if let image = CGWindowListCreateImage(.null, .optionIncludingWindow, windowID,
-                                                       [.boundsIgnoreFraming, .bestResolution]),
-                   let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) {
-                    try? data.write(to: URL(fileURLWithPath: path))
-                    FileHandle.standardError.write("ocr-result snapshot: \(path)\n".data(using: .utf8)!)
+            let panel = OcrResultPanel(screen: screen)
+            func step(_ index: Int) {
+                guard index < states.count else {
+                    NSApp.terminate(nil)
+                    return
                 }
-                NSApp.terminate(nil)
+                panel.show(states[index].1)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    let windowID = CGWindowID(panel.windowNumber)
+                    if let image = CGWindowListCreateImage(.null, .optionIncludingWindow, windowID, [.bestResolution]),
+                       let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) {
+                        let path = "\(directory)/card-\(states[index].0).png"
+                        try? data.write(to: URL(fileURLWithPath: path))
+                        FileHandle.standardError.write("ocr-card snapshot: \(path) frame=\(panel.frame)\n".data(using: .utf8)!)
+                    }
+                    step(index + 1)
+                }
             }
+            step(0)
         }
         return true
     }
 
     private static let demoText = """
-    生成「ClipLine Dev」自签名证书导入登录钥匙串（私钥只存在钥匙串里，不
+    生成「ClipLine Dev」自签名证书导入登录钥匙串（私钥只存在钥匙串里，
     你能感受到别人没有说出口的情绪，这是一份珍贵的敏锐。
     OCR result panel demo — ClipLine 2026-10-12
     """
 }
 
-/// 非激活面板里的按钮：第一次点击就直达按钮，不先吞掉去激活窗口。
-private final class FirstMouseButton: NSButton {
+/// 卡片底：跟随明暗的近乎不透明底色（浅色近白、深色近黑，同 Shottr 实测）+ 发丝边；负责悬停与单击。
+/// 不用毛玻璃：它随背后内容漂移，深色网页上浅色卡会发灰发闷。
+private final class ToastBackground: NSView {
+    var onHover: ((Bool) -> Void)?
+    var onClick: (() -> Void)?
+    private var tracking: NSTrackingArea?
+
+    init() {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 14
+        layer?.cornerCurve = .continuous
+        layer?.masksToBounds = true
+        layer?.borderWidth = 0.5
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        let dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        layer?.backgroundColor = (dark ? NSColor(white: 0.16, alpha: 0.97) : NSColor(white: 0.975, alpha: 0.97)).cgColor
+        layer?.borderColor = (dark ? NSColor.white.withAlphaComponent(0.14) : NSColor.black.withAlphaComponent(0.1)).cgColor
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { onHover?(true) }
+    override func mouseExited(with event: NSEvent) { onHover?(false) }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) {}
+    override func mouseUp(with event: NSEvent) { onClick?() }
+}
+
+/// Shottr 式灰底圆角按钮：浅灰填充、次级文字色，悬停/按下加深。第一次点击直达（非激活面板）。
+private final class PillButton: NSButton {
+    private var hovering = false
+    private var tracking: NSTrackingArea?
+
+    convenience init(title: String, target: AnyObject, action: Selector) {
+        self.init(frame: .zero)
+        self.title = title
+        self.target = target
+        self.action = action
+        isBordered = false
+        font = .systemFont(ofSize: 13)
+        focusRingType = .none
+    }
+
+    override var intrinsicContentSize: NSSize {
+        let text = (title as NSString).size(withAttributes: [.font: font ?? .systemFont(ofSize: 13)])
+        return NSSize(width: ceil(text.width) + 28, height: 28)
+    }
+
+    override func sizeToFit() { setFrameSize(intrinsicContentSize) }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        let strength: CGFloat = isHighlighted ? 0.16 : (hovering ? 0.1 : 0.06)
+        (dark ? NSColor.white.withAlphaComponent(strength + 0.04) : NSColor.black.withAlphaComponent(strength)).setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: 7, yRadius: 7).fill()
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font ?? .systemFont(ofSize: 13),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ]
+        let size = (title as NSString).size(withAttributes: attributes)
+        (title as NSString).draw(at: NSPoint(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2),
+                                 withAttributes: attributes)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        hovering = true
+        needsDisplay = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hovering = false
+        needsDisplay = true
+    }
+
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }

@@ -4,8 +4,7 @@ import Carbon
 
 enum Paster {
     /// 把快照按原始类型写回剪贴板。
-    static func copyToPasteboard(_ snapshot: [[NSPasteboard.PasteboardType: Data]]) {
-        let pb = NSPasteboard.general
+    static func copyToPasteboard(_ snapshot: [[NSPasteboard.PasteboardType: Data]], to pb: NSPasteboard = .general) {
         pb.clearContents()
         let objects: [NSPasteboardItem] = snapshot.map { map in
             let object = NSPasteboardItem()

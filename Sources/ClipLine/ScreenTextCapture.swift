@@ -1,23 +1,43 @@
 import AppKit
 
-/// 屏幕取字：全屏遮罩上拖框选，抓选区像素跑本机 OCR，文字进剪贴板与历史。
-/// 对齐 Shottr 的做法：需要屏幕录制权限、选区有面积上限、识别结果给明确提示。
+/// 屏幕取字（交互照 Shottr）：按热键的一刻把各块屏定格，遮罩铺上定格画面（不压暗），
+/// 截图式准星框选；松手即裁定格画面跑本机 OCR，文字进剪贴板与历史，顶部弹确认卡。
+///
+/// 为什么先定格再框选：所见即所识别——框的是哪张画面就识别哪张，松手后不必再等抓屏；
+/// 而且抓在激活本 App 之前，别的 App 的菜单、悬停浮层还在画面里。
 final class ScreenTextCapture {
     /// 选区面积上限（像素），同 Shottr 的 "Area is too large" 保护。
-    private static let maxAreaPixels: CGFloat = 40_000_000
+    private static let maxAreaPixels = 40_000_000
+    /// 识别超过这么久才先亮「正在识别」：小选区几十毫秒就出结果，直接给结果卡更干净。
+    private static let workingCardDelay: TimeInterval = 0.12
 
-    private var overlay: OverlayPanel?
-    private var toast: NSPanel?
-    private var resultPanel: OcrResultPanel?
-    /// 取字前的前台 App；取字结束/取消后请回来。
-    private var previousApp: NSRunningApplication?
     private let store: ClipStore
+    private let pasteboard: NSPasteboard
+    private var overlays: [SelectionOverlay] = []
+    private var frozen: [CGImage] = []
+    private var previousApp: NSRunningApplication?
+    private var keyMonitor: Any?
+    private var resignObserver: Any?
+    private var becomeObserver: Any?
+    private var activatedThisSession = false
+    private var card: OcrResultPanel?
+    private var lastItem: ClipItem?
+    private var lastText = ""
+    /// 每次取字递增；迟到的识别结果对不上号就丢弃（用户已经开始下一次了）。
+    private var generation = 0
+
+    private var selecting: Bool { !overlays.isEmpty }
+
+    init(store: ClipStore, pasteboard: NSPasteboard = .general) {
+        self.store = store
+        self.pasteboard = pasteboard
+    }
 
     /// 调试：CLIPLINE_DEBUG=1 时把取字流程的关键事件追加到 /tmp/clipline-ocr-debug.log。
     static func debug(_ message: String) {
         guard ProcessInfo.processInfo.environment["CLIPLINE_DEBUG"] == "1" else { return }
         let url = URL(fileURLWithPath: "/tmp/clipline-ocr-debug.log")
-        let line = "\(Date().timeIntervalSince1970) \(message)\n"
+        let line = String(format: "%.3f ", Date().timeIntervalSince1970) + message + "\n"
         if let handle = try? FileHandle(forWritingTo: url) {
             defer { try? handle.close() }
             handle.seekToEndOfFile()
@@ -27,19 +47,12 @@ final class ScreenTextCapture {
         }
     }
 
-    init(store: ClipStore) {
-        self.store = store
-    }
+    // MARK: 开始
 
     func begin() {
-        Self.debug("begin() overlay=\(overlay != nil) active=\(NSApp.isActive)")
-        // 开始新一次取字先收起上次的结果面板——否则它会被拍进这次的选区。
-        resultPanel?.dismiss()
-        resultPanel = nil
-        // 取字进行中再按热键 = 什么都不做（曾做过"再按=取消"，结果是用户连按两下时
-        // 遮罩闪一下就没了）。取消统一走 Esc 或单击空白。
-        guard overlay == nil else {
-            Self.debug("begin(): 遮罩已在场，忽略重复触发")
+        // 取字进行中再按热键 = 什么都不做（做成"再按=取消"会让连按两下的用户看到遮罩闪一下就没了）。
+        guard !selecting else {
+            Self.debug("begin(): 正在框选，忽略重复触发")
             return
         }
         guard CGPreflightScreenCaptureAccess() else {
@@ -47,100 +60,82 @@ final class ScreenTextCapture {
             guideToPermission()
             return
         }
-        guard let screen = LinePanel.screenUnderPointer() ?? NSScreen.main else { return }
-        // 取字期间把自己变成前台（截图工具通例，Shottr 也如此）：只有这样十字光标才起得来、
-        // Esc 才稳；结束或取消后把原前台 App 请回去。
-        let front = NSWorkspace.shared.frontmostApplication
-        previousApp = (front?.processIdentifier == getpid()) ? nil : front
-        NSApp.activate()
-        if !NSApp.isActive {
-            // 合作式激活可能被拒（无点击上下文的激活请求）；框选必须拿到光标与键盘，强制激活兜底。
-            NSApp.activate(ignoringOtherApps: true)
+        // 上一张确认卡还在就先撤掉，否则会被定格进这次的画面。
+        if let card, card.isVisible {
+            card.dismiss(animated: false)
+            self.card = nil
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in self?.freezeAndSelect() }
+        } else {
+            card = nil
+            freezeAndSelect()
         }
-        let overlay = OverlayPanel(screen: screen)
-        overlay.onFinish = { [weak self] rect in self?.finish(rect: rect, screen: screen) }
-        overlay.onCancel = { [weak self] in
-            ScreenTextCapture.debug("onCancel")
-            self?.dismissOverlay()
-        }
-        self.overlay = overlay
-        overlay.makeKeyAndOrderFront(nil)
-        NSCursor.crosshair.set()
-        Self.debug("begin(): 遮罩已上屏 key=\(overlay.isKeyWindow) active=\(NSApp.isActive) screen=\(screen.frame)")
     }
 
-    private func dismissOverlay() {
-        Self.debug("dismissOverlay（prev=\(previousApp?.localizedName ?? "无")）")
-        overlay?.orderOut(nil)
-        overlay = nil
-        // 取字期间我们短暂做过前台，把原 App 请回来。
-        previousApp?.activate(options: [])
-        previousApp = nil
-    }
-
-    private func finish(rect: NSRect, screen: NSScreen) {
-        Self.debug("finish rect=\(rect)")
-        guard overlay != nil else { return }
-        guard rect.width >= 4, rect.height >= 4 else {
-            dismissOverlay()
+    private func freezeAndSelect() {
+        guard !selecting else { return }
+        let started = CACurrentMediaTime()
+        let screens = NSScreen.screens
+        guard let shots = Self.freeze(screens) else {
+            guideToPermission()
             return
         }
-        // 选区（遮罩窗口坐标，左下原点）→ Cocoa 全局坐标 → CG 显示坐标（左上原点，主屏为原点）。
-        let mainHeight = NSScreen.screens.first?.frame.height ?? screen.frame.height
-        let inScreen = NSRect(x: rect.minX + screen.frame.minX, y: rect.minY + screen.frame.minY,
-                              width: rect.width, height: rect.height)
-        let cgRect = CGRect(x: inScreen.minX, y: mainHeight - inScreen.maxY,
-                            width: inScreen.width, height: inScreen.height)
-        let scale = screen.backingScaleFactor
-        // 拖完立即收起遮罩（手感利落）；抓稳定帧放后台，此时是普通在屏抓取，遮罩已不在。
-        dismissOverlay()
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            usleep(60_000)   // 让 WindowServer 走一帧，别抓到遮罩残影
-            let region = Self.captureStable(cgRect: cgRect)
-            DispatchQueue.main.async {
-                guard let self else { return }
-                guard let region else {
-                    self.guideToPermission()
-                    return
-                }
-                guard region.width * region.height <= Int(Self.maxAreaPixels) else {
-                    self.showToast("选区太大，换个小的试试", near: rect, on: screen)
-                    return
-                }
-                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                    let text = Ocr.recognize(region, minimumTextHeightPixels: 6 * scale)
-                    DispatchQueue.main.async {
-                        guard let self else { return }
-                        if let text, !text.isEmpty {
-                            self.deliver(text, on: screen)
-                        } else {
-                            self.showToast("没识别到文字", near: rect, on: screen)
-                        }
-                    }
-                }
+        let captured = CACurrentMediaTime()
+        let front = NSWorkspace.shared.frontmostApplication
+        previousApp = (front?.processIdentifier == getpid()) ? nil : front
+        generation += 1
+        frozen = shots
+        overlays = zip(screens, shots).map { screen, image in
+            let overlay = SelectionOverlay(screen: screen, backdrop: image)
+            overlay.onFinish = { [weak self, weak overlay] rect in
+                guard let overlay else { return }
+                self?.finish(rect: rect, on: overlay)
+            }
+            overlay.onCancel = { [weak self] in self?.cancel(reason: "用户取消") }
+            return overlay
+        }
+        let pointer = NSEvent.mouseLocation
+        let home = overlays.first { NSMouseInRect(pointer, $0.targetScreen.frame, false) } ?? overlays.first
+        for overlay in overlays where overlay !== home { overlay.orderFrontRegardless() }
+        home?.makeKeyAndOrderFront(nil)
+        // 截图工具通例（Shottr 也如此）：框选期间本 App 做前台，十字准星与 Esc 才稳；结束后把原 App 请回来。
+        NSApp.activate()
+        if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+        overlays.forEach { $0.syncPointer() }
+        installSessionMonitors()
+        if NSApp.isActive { ensureCrosshair(generation: generation) }
+        Self.debug(String(format: "begin(): 定格 %d 块屏（抓屏 %.0fms），热键→遮罩上屏 %.0fms；前台=%@ active=%@",
+                          screens.count, (captured - started) * 1000, (CACurrentMediaTime() - started) * 1000,
+                          previousApp?.localizedName ?? "本 App", NSApp.isActive ? "是" : "否"))
+    }
+
+    /// 启动后预热一次抓屏通路：首次抓屏要多花 50ms 左右做初始化，别让它落在第一次按热键上。
+    /// 没有屏幕录制权限时什么都不做（不在启动时弹授权）。
+    static func warmUp() {
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) {
+            guard CGPreflightScreenCaptureAccess() else { return }
+            _ = CGDisplayCreateImage(CGMainDisplayID(), rect: CGRect(x: 0, y: 0, width: 2, height: 2))
+        }
+    }
+
+    /// 各屏同时抓一帧（显示器原生像素）。任何一块抓不到就视为没有屏幕录制权限。
+    private static func freeze(_ screens: [NSScreen]) -> [CGImage]? {
+        let ids = screens.map(displayID)
+        var images = [CGImage?](repeating: nil, count: screens.count)
+        images.withUnsafeMutableBufferPointer { buffer in
+            DispatchQueue.concurrentPerform(iterations: ids.count) { index in
+                buffer[index] = CGDisplayCreateImage(ids[index])
             }
         }
+        let shots = images.compactMap { $0 }
+        return shots.count == screens.count ? shots : nil
     }
 
-    /// 抓「稳定帧」：连抓两帧做分块灰度比对，画面还在动（流式文字的渐入动画、滚动惯性）就等一拍重抓，最多三轮。
-    /// 治的坑：抓在动画中间帧上，字被半透明中间态糊掉，Vision 会把「温柔」识别成「泪柔」这类形近字。
-    static func captureStable(cgRect: CGRect) -> CGImage? {
-        func grab() -> CGImage? {
-            CGWindowListCreateImage(cgRect, .optionOnScreenOnly, kCGNullWindowID, [.bestResolution])
-        }
-        var latest = grab()
-        for _ in 0..<2 {
-            guard let a = latest else { return nil }
-            usleep(180_000)
-            guard let b = grab() else { return a }
-            latest = b
-            if blockDelta(a, b) < 1.0 { return b }
-            usleep(360_000)
-        }
-        return latest
+    private static func displayID(_ screen: NSScreen) -> CGDirectDisplayID {
+        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? CGMainDisplayID()
     }
 
-    /// 两帧的分块灰度平均绝对差，取第 90 百分位：局部在动才算动（时钟跳秒之类的小块干扰不计）。
+    /// 两帧的分块灰度平均绝对差，取第 90 百分位：大面积不同才算不同（时钟跳秒之类的小块差异不计）。
+    /// 自检用它核对"遮罩上的定格画面与真实屏幕一致"。
     static func blockDelta(_ a: CGImage, _ b: CGImage) -> Double {
         let w = 128
         let h = max(1, Int((Double(a.height) / Double(max(a.width, 1)) * 128).rounded()))
@@ -176,18 +171,165 @@ final class ScreenTextCapture {
         return deltas[min(deltas.count - 1, Int(Double(deltas.count) * 0.9))]
     }
 
-    private func deliver(_ text: String, on screen: NSScreen) {
+    // MARK: 框选期间
+
+    private func installSessionMonitors() {
+        // 键盘统一在这里接：Esc 取消；拖动中按住空格挪动选区（同系统截图）。
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
+            guard let self, self.selecting else { return event }
+            switch (event.type, event.keyCode) {
+            case (.keyDown, 53):
+                self.cancel(reason: "Esc")
+                return nil
+            case (_, 49):
+                let moving = event.type == .keyDown
+                self.overlays.filter(\.isDragging).forEach { $0.setMoving(moving) }
+                return nil
+            default:
+                return event
+            }
+        }
+        // 兜底：框选中用户把本 App 切走（⌘Tab 等）就收场，不留定格画面挡在屏上。
+        // 只认"本次已经成为前台之后"的失去前台：激活过渡期里系统可能先补发一次 resign，
+        // 照单全收就是遮罩一上屏就被撤掉（"闪一下就没了"）。
+        activatedThisSession = NSApp.isActive
+        becomeObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
+                                                                object: nil, queue: .main) { [weak self] _ in
+            guard let self, self.selecting else { return }
+            self.activatedThisSession = true
+            Self.debug("session: 已成为前台")
+            self.overlays.forEach { $0.syncPointer() }
+            self.ensureCrosshair(generation: self.generation)
+        }
+        resignObserver = NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification,
+                                                                object: nil, queue: .main) { [weak self] _ in
+            guard let self, self.selecting else { return }
+            guard self.activatedThisSession else {
+                Self.debug("session: 激活过渡期的 resign，忽略")
+                return
+            }
+            self.cancel(reason: "App 被切走")
+        }
+    }
+
+    /// 不动鼠标也要立刻是准星。激活后的几百毫秒里系统还会把光标重置回箭头（实测在 0.05～0.3 秒间出现一次），
+    /// 所以前 1.5 秒以系统当前光标为准每 30ms 校验一次，被改回就再换；之后用户一动鼠标，光标矩形自然接管。
+    private func ensureCrosshair(generation: Int, tick: Int = 0, wasCrosshair: Bool? = nil) {
+        guard selecting, self.generation == generation, tick < 50 else { return }
+        let crosshair = SelectionOverlay.crosshair
+        let system = NSCursor.currentSystem
+        let isCrosshair = system?.hotSpot == crosshair.hotSpot && system?.image.size == crosshair.image.size
+        if isCrosshair != wasCrosshair { Self.debug("cursor: tick \(tick) 准星=\(isCrosshair)") }
+        if !isCrosshair { SelectionOverlay.applyCursorNow(crosshair) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
+            self?.ensureCrosshair(generation: generation, tick: tick + 1, wasCrosshair: isCrosshair)
+        }
+    }
+
+    private func endSession() {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        keyMonitor = nil
+        for observer in [resignObserver, becomeObserver].compactMap({ $0 }) {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        resignObserver = nil
+        becomeObserver = nil
+        overlays.forEach { $0.orderOut(nil) }
+        overlays = []
+        frozen = []
+        // 准星不能留到下一次动鼠标：松手后用户常停着看确认卡，残留的十字像是还在框选。
+        if NSApp.isActive { SelectionOverlay.applyCursorNow(.arrow) }
+        restoreFocus()
+    }
+
+    private func cancel(reason: String) {
+        guard selecting else { return }
+        Self.debug("cancel: \(reason)")
+        endSession()
+    }
+
+    /// 把取字前的前台 App 请回来（我们是主动让出前台，系统允许）。
+    private func restoreFocus() {
+        guard let app = previousApp else { return }
+        previousApp = nil
+        guard !app.isTerminated else { return }
+        NSApp.yieldActivation(to: app)
+        app.activate(from: .current, options: [])
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            guard let self, !self.selecting, NSApp.isActive, !app.isTerminated else { return }
+            Self.debug("restoreFocus: 协作式交还被拒，改直接激活 \(app.localizedName ?? "?")")
+            app.activate(options: [])
+        }
+    }
+
+    // MARK: 识别
+
+    private func finish(rect: NSRect, on overlay: SelectionOverlay) {
+        guard let index = overlays.firstIndex(where: { $0 === overlay }) else { return }
+        let image = frozen[index]
+        let screen = overlay.targetScreen
+        let pixel = SelectionGeometry.pixelRect(for: rect, viewSize: screen.frame.size,
+                                                imageSize: CGSize(width: image.width, height: image.height))
+        // 先收遮罩、还前台（手感利落）；识别全在定格画面上做，不再依赖屏幕此刻的样子。
+        endSession()
+        Self.debug("finish: rect=\(rect) pixel=\(pixel)")
+        guard !pixel.isNull, pixel.width >= 4, pixel.height >= 4, let crop = image.cropping(to: pixel) else { return }
+        guard Int(pixel.width * pixel.height) <= Self.maxAreaPixels else {
+            present(.tooLarge, on: screen)
+            return
+        }
+        let token = generation
+        let started = CACurrentMediaTime()
+        var done = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.workingCardDelay) { [weak self] in
+            guard let self, !done, self.generation == token, !self.selecting else { return }
+            self.present(.working, on: screen)
+        }
+        let scale = screen.backingScaleFactor
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let text = Ocr.recognize(crop, minimumTextHeightPixels: 6 * scale)
+            DispatchQueue.main.async {
+                done = true
+                guard let self, self.generation == token else { return }
+                Self.debug(String(format: "ocr: %.0fms，%d 字", (CACurrentMediaTime() - started) * 1000, text?.count ?? 0))
+                if let text, !text.isEmpty {
+                    self.deliver(text, replacing: nil)
+                    self.present(.copied(text), on: screen)
+                } else {
+                    self.present(.empty, on: screen)
+                }
+            }
+        }
+    }
+
+    /// 文字进剪贴板 + 剪贴板绳历史（来源记为「屏幕取字」）。replacing：去换行时顶掉刚才那条，历史里只留最终版。
+    private func deliver(_ text: String, replacing old: ClipItem?) {
         let item = ClipItem(kind: .text(text), source: .screenText, copiedAt: Date(),
                             snapshot: [[.string: Data(text.utf8)]], fingerprint: "t:" + text)
-        if let snapshot = item.snapshot { Paster.copyToPasteboard(snapshot) }
+        if let snapshot = item.snapshot { Paster.copyToPasteboard(snapshot, to: pasteboard) }
+        if let old { store.remove(old) }
         store.ingestScreenText(item)
-        // 顶部确认卡片（同 Shottr）。
-        // 用户已经在做下一次取字（遮罩在场）时不打扰——内容仍在剪贴板与剪贴板绳里。
-        guard overlay == nil else { return }
-        resultPanel?.dismiss()
-        let panel = OcrResultPanel(text: text, on: screen)
-        resultPanel = panel
-        panel.present()
+        lastItem = item
+        lastText = text
+    }
+
+    private func present(_ state: OcrResultPanel.State, on screen: NSScreen) {
+        // 用户已经在框下一次了就不打扰——内容照样在剪贴板与剪贴板绳里。
+        guard !selecting else { return }
+        let panel: OcrResultPanel
+        if let card, card.isVisible {
+            panel = card
+        } else {
+            panel = OcrResultPanel(screen: screen)
+            card = panel
+        }
+        panel.onCutBreaks = { [weak self, weak panel] in
+            guard let self, let panel, case .copied = panel.state else { return }
+            let joined = Ocr.joinLines(self.lastText)
+            self.deliver(joined, replacing: self.lastItem)
+            panel.show(.copiedWithoutBreaks(joined))
+        }
+        panel.show(state)
     }
 
     private func guideToPermission() {
@@ -207,244 +349,11 @@ final class ScreenTextCapture {
         }
     }
 
-    /// 调试：CLIPLINE_SELECTION_SNAPSHOT=<png> 展示取字遮罩的提示态，抓屏幕顶部一条后退出
-    /// （普通在屏抓取，需要屏幕录制权限；App 自身已授）。
-    static func snapshotHintIfRequested() -> Bool {
-        guard let path = ProcessInfo.processInfo.environment["CLIPLINE_SELECTION_SNAPSHOT"] else { return false }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            guard let screen = LinePanel.screenUnderPointer() ?? NSScreen.main else { NSApp.terminate(nil); return }
-            let overlay = OverlayPanel(screen: screen)
-            overlay.orderFrontRegardless()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                let mainHeight = NSScreen.screens.first?.frame.height ?? screen.frame.height
-                let strip = CGRect(x: screen.frame.midX - 460,
-                                   y: mainHeight - screen.frame.maxY + 10,
-                                   width: 920, height: 150)
-                if let image = CGWindowListCreateImage(strip, .optionOnScreenOnly, kCGNullWindowID, [.bestResolution]),
-                   let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) {
-                    try? data.write(to: URL(fileURLWithPath: path))
-                }
-                NSApp.terminate(nil)
-            }
-        }
-        return true
-    }
+    // MARK: 自检接口（ScreenTextSelfTest 用）
 
-    /// 调试：CLIPLINE_OCR_RUN_DEBUG=selection 用——展示遮罩并画一个示例选区，供截图核验框选观感。
-    func debugShowOverlayWithSelection(_ rect: NSRect) {
-        guard let screen = LinePanel.screenUnderPointer() ?? NSScreen.main else { return }
-        let overlay = OverlayPanel(screen: screen)
-        self.overlay = overlay
-        overlay.makeKeyAndOrderFront(nil)
-        overlay.debugSetSelection(rect)
-        Self.debug("debug: pointer=\(NSEvent.mouseLocation) screen=\(screen.frame) overlayFrame=\(overlay.frame) visible=\(overlay.isVisible) key=\(overlay.isKeyWindow)")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak overlay] in
-            guard let overlay else { return }
-            let windowID = CGWindowID(overlay.windowNumber)
-            if let image = CGWindowListCreateImage(.null, .optionIncludingWindow, windowID,
-                                                   [.boundsIgnoreFraming, .bestResolution]),
-               let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) {
-                try? data.write(to: URL(fileURLWithPath: "/tmp/ocr-overlay-window.png"))
-                Self.debug("debug: 遮罩窗口自捕获 \(image.width)x\(image.height)")
-            }
-        }
-    }
-
-    /// 选区附近的轻提示，1.6 秒后自动消失。
-    private func showToast(_ message: String, near rect: NSRect, on screen: NSScreen) {
-        toast?.orderOut(nil)
-        let width: CGFloat = 440
-        let label = NSTextField(labelWithString: message)
-        label.font = .systemFont(ofSize: 12, weight: .medium)
-        label.textColor = .white
-        label.lineBreakMode = .byTruncatingTail
-        label.frame = NSRect(x: 12, y: 7, width: width - 24, height: 18)
-        let content = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 32))
-        content.wantsLayer = true
-        content.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.82).cgColor
-        content.layer?.cornerRadius = 9
-        content.addSubview(label)
-
-        let x = min(max(screen.frame.minX + rect.minX, screen.frame.minX + 8),
-                    screen.frame.maxX - width - 8)
-        let y = min(screen.frame.minY + rect.minY + rect.height + 8, screen.frame.maxY - 40)
-        let panel = NSPanel(contentRect: NSRect(x: x, y: y, width: width, height: 32),
-                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.level = .screenSaver
-        panel.ignoresMouseEvents = true
-        panel.isReleasedWhenClosed = false
-        panel.contentView = content
-        panel.orderFrontRegardless()
-        toast = panel
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
-            self?.toast?.orderOut(nil)
-            self?.toast = nil
-        }
-    }
-}
-
-/// 取字遮罩：暗底 + 镂空选区 + 尺寸提示；拖框即选，Esc 取消。
-private final class OverlayPanel: NSPanel {
-    var onFinish: ((NSRect) -> Void)?
-    var onCancel: (() -> Void)?
-    private let selectionView: SelectionView
-
-    init(screen: NSScreen) {
-        selectionView = SelectionView(frame: NSRect(origin: .zero, size: screen.frame.size))
-        super.init(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel],
-                   backing: .buffered, defer: false)
-        isOpaque = false
-        backgroundColor = .clear
-        hasShadow = false
-        level = .screenSaver
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        isReleasedWhenClosed = false
-        animationBehavior = .none
-        acceptsMouseMovedEvents = true
-        selectionView.onFinish = { [weak self] rect in self?.onFinish?(rect) }
-        selectionView.onCancel = { [weak self] in self?.onCancel?() }
-        contentView = selectionView
-    }
-
-    /// 调试：画一个示例选区供截图核验框选观感。
-    func debugSetSelection(_ rect: NSRect) {
-        selectionView.debugSelect(rect)
-    }
-
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { false }
-
-    override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 { onCancel?() } else { super.keyDown(with: event) }
-    }
-}
-
-private final class SelectionView: NSView {
-    var onFinish: ((NSRect) -> Void)?
-    var onCancel: (() -> Void)?
-
-    private var start: NSPoint?
-    private var selection: NSRect = .zero
-    private var cursorTracking: NSTrackingArea?
-
-    override var acceptsFirstResponder: Bool { true }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let cursorTracking { removeTrackingArea(cursorTracking) }
-        // 非激活窗口里 resetCursorRects 不生效（macOS 只给前台 App 应用光标 rect），
-        // 系统随后会把光标打回原形。.activeAlways 的跟踪区是官方给"后台窗口也要管光标"
-        // 的机制：每次光标更新都回调 cursorUpdate，我们在那里强制十字。
-        let area = NSTrackingArea(rect: bounds,
-                                  options: [.activeAlways, .cursorUpdate, .mouseMoved, .mouseEnteredAndExited],
-                                  owner: self, userInfo: nil)
-        addTrackingArea(area)
-        cursorTracking = area
-    }
-
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .crosshair)
-    }
-
-    override func cursorUpdate(with event: NSEvent) {
-        NSCursor.crosshair.set()
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        NSCursor.crosshair.set()
-    }
-
-    override func mouseMoved(with event: NSEvent) {
-        NSCursor.crosshair.set()
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        ScreenTextCapture.debug("selection mouseDown")
-        start = convert(event.locationInWindow, from: nil)
-        selection = .zero
-        needsDisplay = true
-    }
-
-    /// 调试用：直接摆一个选区。
-    func debugSelect(_ rect: NSRect) {
-        start = rect.origin
-        selection = rect
-        needsDisplay = true
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        guard let start else { return }
-        let now = convert(event.locationInWindow, from: nil)
-        selection = NSRect(x: min(start.x, now.x), y: min(start.y, now.y),
-                           width: abs(now.x - start.x), height: abs(now.y - start.y))
-        needsDisplay = true
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        defer { start = nil }
-        guard selection.width >= 4, selection.height >= 4 else {
-            ScreenTextCapture.debug("selection mouseUp(<4pt) 视为取消")
-            onCancel?()
-            return
-        }
-        onFinish?(selection)
-    }
-
-    override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 {
-            ScreenTextCapture.debug("selection keyDown Esc")
-            onCancel?()
-        } else { super.keyDown(with: event) }
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        // 还没开始拖框：给一句提示——不压暗屏幕，需要说明已进入取字模式（同 Shottr 的框选提示）。
-        if start == nil {
-            let hint = "拖框选住要识别的文字 · Esc 取消" as NSString
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 12.5, weight: .medium),
-                .foregroundColor: NSColor.white,
-            ]
-            let size = hint.size(withAttributes: attrs)
-            let pill = NSRect(x: (bounds.width - size.width) / 2 - 14, y: bounds.height - 72,
-                              width: size.width + 28, height: size.height + 11)
-            NSColor.black.withAlphaComponent(0.72).setFill()
-            NSBezierPath(roundedRect: pill, xRadius: pill.height / 2, yRadius: pill.height / 2).fill()
-            hint.draw(at: NSPoint(x: pill.minX + 14, y: pill.minY + 5.5), withAttributes: attrs)
-            return
-        }
-        // 拖框中：不遮暗屏幕（对齐 Shottr 的框选观感）。选区要有投影 + 双色描边——
-        // 白色网页上深线才看得见、深色界面上白线才看得见，只画一种必有隐形底色。
-        guard selection.width > 0, selection.height > 0 else { return }
-        if let context = NSGraphicsContext.current?.cgContext {
-            context.saveGState()
-            context.setShadow(offset: .zero, blur: 12,
-                              color: NSColor.black.withAlphaComponent(0.55).cgColor)
-            NSColor(white: 0.05, alpha: 0.9).setStroke()
-            let outline = NSBezierPath(rect: selection.insetBy(dx: 1, dy: 1))
-            outline.lineWidth = 2
-            outline.stroke()
-            context.restoreGState()
-        }
-        NSColor.white.withAlphaComponent(0.9).setStroke()
-        let inner = NSBezierPath(rect: selection.insetBy(dx: 4, dy: 4))
-        inner.lineWidth = 1.5
-        inner.stroke()
-
-        // 尺寸提示贴在选区左上角外侧（像素数，同 Shottr 的 px 标注）。
-        let pixelScale = window?.backingScaleFactor ?? 2
-        let text = "\(Int(selection.width * pixelScale)) × \(Int(selection.height * pixelScale)) px" as NSString
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium),
-            .foregroundColor: NSColor.white,
-        ]
-        let size = text.size(withAttributes: attributes)
-        let labelRect = NSRect(x: selection.minX, y: min(selection.maxY + 6, bounds.maxY - size.height - 4),
-                               width: size.width + 12, height: size.height + 4)
-        NSColor.black.withAlphaComponent(0.75).setFill()
-        NSBezierPath(roundedRect: labelRect, xRadius: 4, yRadius: 4).fill()
-        text.draw(at: NSPoint(x: labelRect.minX + 6, y: labelRect.minY + 2), withAttributes: attributes)
-    }
+    var debugOverlays: [SelectionOverlay] { overlays }
+    var debugFrozen: [CGImage] { frozen }
+    var debugCard: OcrResultPanel? { card }
+    var debugPasteboard: NSPasteboard { pasteboard }
+    static func debugDisplayID(_ screen: NSScreen) -> CGDirectDisplayID { displayID(screen) }
 }

@@ -9,7 +9,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panel: LinePanel!
     private var revealHotKey: HotKey?
     private var screenTextHotKey: HotKey?
-    private lazy var screenText = ScreenTextCapture(store: store)
+    /// 自检（CLIPLINE_OCR_RUN_DEBUG=script）走私有剪贴板，不动用户的剪贴板。
+    private lazy var screenText = ScreenTextCapture(
+        store: store,
+        pasteboard: AppDelegate.selfTestDirectory == nil ? .general : NSPasteboard(name: .init("com.ashuang.clipline.selftest")))
+    private static let selfTestDirectory: String? = {
+        let env = ProcessInfo.processInfo.environment
+        guard env["CLIPLINE_OCR_RUN_DEBUG"] == "script" else { return nil }
+        return env["CLIPLINE_OCR_RUN_DIR"] ?? "/tmp/clipline-ocr-selftest"
+    }()
     private let settingsWindow = SettingsWindowController()
     private var settingsObserver: AnyCancellable?
     private var statusItem: NSStatusItem!
@@ -19,9 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var previousApp: NSRunningApplication?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if OcrProbe.runIfRequested() { return }   // CLIPLINE_OCR_PROBE=1：抓屏对拍照，不走正常 UI
-        if ScreenTextCapture.snapshotHintIfRequested() { return }   // CLIPLINE_SELECTION_SNAPSHOT=<png>：遮罩提示态自截图
-        if OcrResultPanel.snapshotDemoIfRequested() { return }   // CLIPLINE_OCR_RESULT_SNAPSHOT=<png>：结果面板自截图
+        if OcrResultPanel.snapshotDemoIfRequested() { return }   // CLIPLINE_OCR_RESULT_SNAPSHOT=<目录>：确认卡各状态自截图
         let view = NSHostingView(rootView: LineView(store: store))
         panel = LinePanel(content: view)
         panel.placeOnScreen()
@@ -34,7 +40,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.onLeft = { [weak self] in self?.store.select(offset: -1) }
         panel.onRight = { [weak self] in self?.store.select(offset: 1) }
 
-        installHotKeys()
+        // 自检实例不抢全局热键（正在用的那份 ClipLine 还要用）。
+        if Self.selfTestDirectory == nil { installHotKeys() }
         // 容量设置变化即时复评（立刻淘汰超出新上限的条目）。
         settingsObserver = settings.$maxItems.merge(with: settings.$imageBudgetMB)
             .dropFirst(2)
@@ -55,6 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store.start()
         store.updateRetention(settings.retention)
         Ocr.warmUp()
+        ScreenTextCapture.warmUp()
 
         let env = ProcessInfo.processInfo.environment
         if env["CLIPLINE_DEMO"] == "1" { store.seedDemo() }
@@ -63,35 +71,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["CLIPLINE_DEMO"] == "1" || env["CLIPLINE_SHOW"] == "1" { reveal() }
         // 调试：CLIPLINE_SETTINGS=1 直接开设置窗口（截图/自查用）。
         if env["CLIPLINE_SETTINGS"] == "1" { openSettings() }
-        // 调试：CLIPLINE_OCR_RUN_DEBUG=direct|hotkey 启动 1.5s 后触发一次屏幕取字
-        // （hotkey = 往 HID 层投合成 ⌃⌥O，走完整 Carbon 全局热键路径），3s/6s 各抓一张整屏留证后退出。
-        if let mode = env["CLIPLINE_OCR_RUN_DEBUG"] {
-            ScreenTextCapture.debug("run-debug: axIsTrusted=\(AXIsProcessTrusted()) mode=\(mode)")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-                if mode == "direct" {
-                    self?.screenText.begin()
-                } else if mode == "selection" {
-                    self?.screenText.debugShowOverlayWithSelection(NSRect(x: 420, y: 300, width: 640, height: 300))
-                } else {
-                    let source = CGEventSource(stateID: .hidSystemState)
-                    for isDown in [true, false] {
-                        let event = CGEvent(keyboardEventSource: source, virtualKey: 31, keyDown: isDown)   // O
-                        event?.flags = [.maskControl, .maskAlternate]
-                        event?.post(tap: .cghidEventTap)
-                    }
-                    ScreenTextCapture.debug("run-debug: 已投递合成 ⌃⌥O")
-                }
-            }
-            for (index, delay) in [3.0, 6.0].enumerated() {
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                    ScreenTextCapture.debug("run-debug capture #\(index + 1)")
-                    if let image = CGWindowListCreateImage(.infinite, .optionOnScreenOnly, kCGNullWindowID, [.bestResolution]),
-                       let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) {
-                        try? data.write(to: URL(fileURLWithPath: "/tmp/ocr-run-\(index + 1).png"))
-                    }
-                }
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 7.5) { NSApp.terminate(nil) }
+        // 调试：CLIPLINE_OCR_RUN_DEBUG=script 无人值守走一遍屏幕取字全流程、逐状态截图
+        // （存 CLIPLINE_OCR_RUN_DIR，默认 /tmp/clipline-ocr-selftest），结论见其中 report.txt。
+        if let directory = Self.selfTestDirectory {
+            let test = ScreenTextSelfTest(capture: screenText, store: store, directory: directory)
+            Task { @MainActor in await test.run() }
         }
         FileHandle.standardError.write("ClipLine started, items=\(store.items.count)\n".data(using: .utf8)!)
         snapshotIfRequested()
