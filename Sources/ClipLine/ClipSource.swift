@@ -2,7 +2,7 @@ import AppKit
 
 /// 一条剪贴板历史的来源 App，在复制被捕获的那一刻记录。
 struct ClipSource {
-    enum Kind { case app, continuity, unknown }
+    enum Kind { case app, continuity, screenText, unknown }
 
     let bundleID: String?
     let name: String
@@ -13,12 +13,15 @@ struct ClipSource {
 
     static let unknown = ClipSource(bundleID: nil, name: "未知来源", icon: nil, kind: .unknown)
     static let continuity = ClipSource(bundleID: nil, name: "接力", icon: nil, kind: .continuity)
+    /// ClipLine 自己的屏幕取字。
+    static let screenText = ClipSource(bundleID: nil, name: "屏幕取字", icon: nil, kind: .screenText)
 
     /// 悬停时页脚左侧显示的来源说明。
     var footnote: String {
         switch kind {
         case .app: return "来自 \(name)"
         case .continuity: return "来自 iPhone"
+        case .screenText: return "屏幕取字"
         case .unknown: return "来源未知"
         }
     }
@@ -27,6 +30,7 @@ struct ClipSource {
         switch kind {
         case .app: return name
         case .continuity: return "接力（通用剪贴板）"
+        case .screenText: return "由 ClipLine 屏幕取字识别"
         case .unknown: return "来源未知"
         }
     }
@@ -36,6 +40,7 @@ struct ClipSource {
         switch kind {
         case .app: return ([name] + aliases).joined(separator: " ")
         case .continuity: return "接力 iPhone"
+        case .screenText: return "屏幕取字 文字识别 OCR"
         case .unknown: return nil
         }
     }
@@ -44,6 +49,7 @@ struct ClipSource {
         switch kind {
         case .app: return "app"
         case .continuity: return "continuity"
+        case .screenText: return "screenText"
         case .unknown: return "unknown"
         }
     }
@@ -52,6 +58,7 @@ struct ClipSource {
     static func restore(kind: String, bundleID: String?, name: String) -> ClipSource {
         switch kind {
         case "continuity": return .continuity
+        case "screenText": return .screenText
         case "app":
             guard let bundleID else { return ClipSource(bundleID: nil, name: name, icon: nil, kind: .app) }
             return app(bundleID: bundleID, runningName: name.isEmpty ? bundleID : name)

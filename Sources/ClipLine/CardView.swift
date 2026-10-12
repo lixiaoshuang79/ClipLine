@@ -176,6 +176,14 @@ struct SourceBadge: View {
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.white)
                 }
+        case .screenText:
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(.white.opacity(0.22))
+                .overlay {
+                    Image(systemName: "text.viewfinder")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.white)
+                }
         case .unknown:
             RoundedRectangle(cornerRadius: 5, style: .continuous)
                 .strokeBorder(palette.ink3.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))

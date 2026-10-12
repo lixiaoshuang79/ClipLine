@@ -1,11 +1,17 @@
 import AppKit
 import Carbon
+import Combine
 import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let store = AppDelegate.makeStore()
+    private let settings = Settings.shared
     private var panel: LinePanel!
-    private var hotKey: HotKey?
+    private var revealHotKey: HotKey?
+    private var screenTextHotKey: HotKey?
+    private lazy var screenText = ScreenTextCapture(store: store)
+    private let settingsWindow = SettingsWindowController()
+    private var settingsObserver: AnyCancellable?
     private var statusItem: NSStatusItem!
     private var outsideMonitor: Any?
     private var orderOutWork: DispatchWorkItem?
@@ -25,11 +31,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.onLeft = { [weak self] in self?.store.select(offset: -1) }
         panel.onRight = { [weak self] in self?.store.select(offset: 1) }
 
-        // ⌃⌥V（keyCode 9 = V）
-        hotKey = HotKey(keyCode: 9, modifiers: controlKey | optionKey) { [weak self] in
-            guard let self else { return }
-            self.store.revealed ? self.tuck() : self.reveal()
-        }
+        installHotKeys()
+        // 容量设置变化即时复评（立刻淘汰超出新上限的条目）。
+        settingsObserver = settings.$maxItems.merge(with: settings.$imageBudgetMB)
+            .dropFirst(2)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.store.updateRetention(self.settings.retention)
+            }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem.button {
@@ -41,14 +50,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         store.start()
+        store.updateRetention(settings.retention)
+        Ocr.warmUp()
 
         let env = ProcessInfo.processInfo.environment
         if env["CLIPLINE_DEMO"] == "1" { store.seedDemo() }
         // 调试：CLIPLINE_QUERY=<文字> 预填搜索词，便于不打字就目测搜索态。
         if let query = env["CLIPLINE_QUERY"], !query.isEmpty { store.replaceQuery(query) }
         if env["CLIPLINE_DEMO"] == "1" || env["CLIPLINE_SHOW"] == "1" { reveal() }
+        // 调试：CLIPLINE_SETTINGS=1 直接开设置窗口（截图/自查用）。
+        if env["CLIPLINE_SETTINGS"] == "1" { openSettings() }
         FileHandle.standardError.write("ClipLine started, items=\(store.items.count)\n".data(using: .utf8)!)
         snapshotIfRequested()
+    }
+
+    // MARK: 热键
+
+    private func installHotKeys() {
+        revealHotKey = HotKey(spec: settings.revealHotKey) { [weak self] in
+            guard let self else { return }
+            self.store.revealed ? self.tuck() : self.reveal()
+        }
+        screenTextHotKey = HotKey(spec: settings.screenTextHotKey) { [weak self] in
+            self?.screenText.begin()
+        }
+    }
+
+    /// 换键：先注销旧的，注册失败就装回旧的并返回 false。
+    private func applyHotKey(_ target: HotKeyTarget, _ spec: HotKey.Spec) -> Bool {
+        switch target {
+        case .reveal:
+            let old = settings.revealHotKey
+            revealHotKey?.unregister()
+            if let hot = HotKey(spec: spec, action: { [weak self] in
+                guard let self else { return }
+                self.store.revealed ? self.tuck() : self.reveal()
+            }) {
+                revealHotKey = hot
+                settings.revealHotKey = spec
+                return true
+            }
+            revealHotKey = HotKey(spec: old, action: { [weak self] in
+                guard let self else { return }
+                self.store.revealed ? self.tuck() : self.reveal()
+            })
+            return false
+        case .screenText:
+            let old = settings.screenTextHotKey
+            screenTextHotKey?.unregister()
+            if let hot = HotKey(spec: spec, action: { [weak self] in self?.screenText.begin() }) {
+                screenTextHotKey = hot
+                settings.screenTextHotKey = spec
+                return true
+            }
+            screenTextHotKey = HotKey(spec: old, action: { [weak self] in self?.screenText.begin() })
+            return false
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -132,6 +189,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         tuck(immediate: true)
+        guard settings.pasteAutomatically else { return }   // 只复制模式：不合成 ⌘V
         if let previousApp,
            NSWorkspace.shared.frontmostApplication?.processIdentifier == getpid() {
             previousApp.activate(options: [])
@@ -163,10 +221,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showMenu() {
         let menu = NSMenu()
-        let toggle = NSMenuItem(title: "显示 / 隐藏剪贴板绳（⌃⌥V）",
+        let toggle = NSMenuItem(title: "显示 / 隐藏剪贴板绳（\(settings.revealHotKey.display)）",
                                 action: #selector(toggleFromMenu), keyEquivalent: "")
         toggle.target = self
         menu.addItem(toggle)
+        let ocr = NSMenuItem(title: "屏幕取字…（\(settings.screenTextHotKey.display)）",
+                             action: #selector(screenTextFromMenu), keyEquivalent: "")
+        ocr.target = self
+        menu.addItem(ocr)
         menu.addItem(.separator())
         menu.autoenablesItems = false
         let clear = NSMenuItem(title: "清空历史…", action: #selector(confirmClearHistory), keyEquivalent: "")
@@ -177,6 +239,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         login.target = self
         login.state = LaunchAtLogin.isEnabled ? .on : .off
         menu.addItem(login)
+        menu.addItem(.separator())
+        let settingsItem = NSMenuItem(title: "设置…", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
         let ax = NSMenuItem(title: "辅助功能权限…", action: #selector(openAccessibilityPane), keyEquivalent: "")
         ax.target = self
         menu.addItem(ax)
@@ -186,6 +252,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
         statusItem.button?.performClick(nil)
         statusItem.menu = nil
+    }
+
+    @objc private func screenTextFromMenu() {
+        screenText.begin()
+    }
+
+    @objc private func openSettings() {
+        settingsWindow.show(settings: settings) { [weak self] target, spec in
+            self?.applyHotKey(target, spec) ?? false
+        }
     }
 
     @objc private func toggleFromMenu() {

@@ -40,7 +40,7 @@ final class ClipStore: ObservableObject {
     /// nil = 只在内存里（演示模式或存储打不开）。
     private let archive: ClipArchive?
     private let archiveNote: String
-    private let retention: Retention
+    private var retention: Retention
     /// 所有磁盘读写串行地跑在这条队列上，主线程不碰 SQLite。
     private let io = DispatchQueue(label: "com.ashuang.clipline.archive", qos: .utility)
     private var scrollSerial = 0
@@ -137,6 +137,19 @@ final class ClipStore: ObservableObject {
         replaceQuery("")
         refilter(queryChanged: false)
         persist { try $0.deleteAll(keepingPinned: true) }
+    }
+
+    /// 设置里改了容量：立即按新策略复评（超出的现在淘汰）。
+    func updateRetention(_ next: Retention) {
+        guard next.maxItems != retention.maxItems || next.imageBudget != retention.imageBudget else { return }
+        retention = next
+        commit(items)
+    }
+
+    /// 屏幕取字：文字刚被写入剪贴板（调用方负责），这里同步 changeCount 并收进历史。
+    func ingestScreenText(_ item: ClipItem) {
+        lastChangeCount = NSPasteboard.general.changeCount
+        ingest(item)
     }
 
     /// 把新的完整列表定下来：执行容量淘汰，被移走的条目同步从磁盘删除。

@@ -12,6 +12,8 @@ struct SourceTint: Hashable {
     static let graphite = SourceTint(h: 260, c: 0.006, h2: nil, style: .graphite)
     static let unknown = SourceTint(h: 260, c: 0.006, h2: nil, style: .unknown)
     static let continuity = normalized(h: 250, c: 0.12, h2: nil)
+    /// 屏幕取字：ClipLine 自己的来源，固定青色（不走图标取色）。
+    static let screenText = normalized(h: 195, c: 0.12, h2: nil)
 
     /// 规范化彩度；色相落在 70°–120° 的走黄色带特例（亮色头 + 深棕字）。
     static func normalized(h: Double, c: Double, h2: Double?) -> SourceTint {
@@ -41,6 +43,7 @@ struct SourceTint: Hashable {
     static func of(_ source: ClipSource) -> SourceTint {
         switch source.kind {
         case .continuity: return .continuity
+        case .screenText: return .screenText
         case .unknown: return .unknown
         case .app:
             guard let id = source.bundleID else { return .graphite }
