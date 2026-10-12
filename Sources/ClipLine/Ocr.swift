@@ -14,7 +14,9 @@ enum Ocr {
         request.recognitionLevel = .accurate
         request.recognitionLanguages = settings.ocrLanguages
         request.usesLanguageCorrection = true
-        // 显式钉住 revision：跨系统版本结果稳定（同 Shottr 的 setRevision: 做法）。
+        // 最小文字高度 ≈ 6px：滤掉噪点级的小字（对齐 Shottr 的实际做法，深反汇编 FUN_100003eac 所得）。
+        request.minimumTextHeight = 6.0 / CGFloat(max(image.height, 1))
+        // 显式钉住 revision：跨系统版本结果稳定（Shottr 用 currentRevision，这里取等价的受支持最高版）。
         if let latest = VNRecognizeTextRequest.supportedRevisions.max() {
             request.revision = latest
         }
