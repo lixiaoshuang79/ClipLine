@@ -63,6 +63,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["CLIPLINE_DEMO"] == "1" || env["CLIPLINE_SHOW"] == "1" { reveal() }
         // 调试：CLIPLINE_SETTINGS=1 直接开设置窗口（截图/自查用）。
         if env["CLIPLINE_SETTINGS"] == "1" { openSettings() }
+        // 调试：CLIPLINE_OCR_RUN_DEBUG=direct|hotkey 启动 1.5s 后触发一次屏幕取字
+        // （hotkey = 往 HID 层投合成 ⌃⌥O，走完整 Carbon 全局热键路径），3s/6s 各抓一张整屏留证后退出。
+        if let mode = env["CLIPLINE_OCR_RUN_DEBUG"] {
+            ScreenTextCapture.debug("run-debug: axIsTrusted=\(AXIsProcessTrusted()) mode=\(mode)")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                if mode == "direct" {
+                    self?.screenText.begin()
+                } else {
+                    let source = CGEventSource(stateID: .hidSystemState)
+                    for isDown in [true, false] {
+                        let event = CGEvent(keyboardEventSource: source, virtualKey: 31, keyDown: isDown)   // O
+                        event?.flags = [.maskControl, .maskAlternate]
+                        event?.post(tap: .cghidEventTap)
+                    }
+                    ScreenTextCapture.debug("run-debug: 已投递合成 ⌃⌥O")
+                }
+            }
+            for (index, delay) in [3.0, 6.0].enumerated() {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    ScreenTextCapture.debug("run-debug capture #\(index + 1)")
+                    if let image = CGWindowListCreateImage(.infinite, .optionOnScreenOnly, kCGNullWindowID, [.bestResolution]),
+                       let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) {
+                        try? data.write(to: URL(fileURLWithPath: "/tmp/ocr-run-\(index + 1).png"))
+                    }
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 7.5) { NSApp.terminate(nil) }
+        }
         FileHandle.standardError.write("ClipLine started, items=\(store.items.count)\n".data(using: .utf8)!)
         snapshotIfRequested()
     }

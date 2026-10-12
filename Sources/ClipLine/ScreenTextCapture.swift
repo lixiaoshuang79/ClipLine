@@ -13,17 +13,33 @@ final class ScreenTextCapture {
     private var previousApp: NSRunningApplication?
     private let store: ClipStore
 
+    /// 调试：CLIPLINE_DEBUG=1 时把取字流程的关键事件追加到 /tmp/clipline-ocr-debug.log。
+    static func debug(_ message: String) {
+        guard ProcessInfo.processInfo.environment["CLIPLINE_DEBUG"] == "1" else { return }
+        let url = URL(fileURLWithPath: "/tmp/clipline-ocr-debug.log")
+        let line = "\(Date().timeIntervalSince1970) \(message)\n"
+        if let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            handle.seekToEndOfFile()
+            handle.write(Data(line.utf8))
+        } else {
+            try? line.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
     init(store: ClipStore) {
         self.store = store
     }
 
     func begin() {
+        Self.debug("begin() overlay=\(overlay != nil) active=\(NSApp.isActive)")
         // 开始新一次取字先收起上次的结果面板——否则它会被拍进这次的选区。
         resultPanel?.dismiss()
         resultPanel = nil
-        // 取字进行中再按一次热键 = 取消本次框选。
-        if overlay != nil {
-            dismissOverlay()
+        // 取字进行中再按热键 = 什么都不做（曾做过"再按=取消"，结果是用户连按两下时
+        // 遮罩闪一下就没了）。取消统一走 Esc 或单击空白。
+        guard overlay == nil else {
+            Self.debug("begin(): 遮罩已在场，忽略重复触发")
             return
         }
         guard CGPreflightScreenCaptureAccess() else {
@@ -43,13 +59,18 @@ final class ScreenTextCapture {
         }
         let overlay = OverlayPanel(screen: screen)
         overlay.onFinish = { [weak self] rect in self?.finish(rect: rect, screen: screen) }
-        overlay.onCancel = { [weak self] in self?.dismissOverlay() }
+        overlay.onCancel = { [weak self] in
+            ScreenTextCapture.debug("onCancel")
+            self?.dismissOverlay()
+        }
         self.overlay = overlay
         overlay.makeKeyAndOrderFront(nil)
         NSCursor.crosshair.set()
+        Self.debug("begin(): 遮罩已上屏 key=\(overlay.isKeyWindow) active=\(NSApp.isActive) screen=\(screen.frame)")
     }
 
     private func dismissOverlay() {
+        Self.debug("dismissOverlay（prev=\(previousApp?.localizedName ?? "无")）")
         overlay?.orderOut(nil)
         overlay = nil
         // 取字期间我们短暂做过前台，把原 App 请回来。
@@ -58,6 +79,7 @@ final class ScreenTextCapture {
     }
 
     private func finish(rect: NSRect, screen: NSScreen) {
+        Self.debug("finish rect=\(rect)")
         guard overlay != nil else { return }
         guard rect.width >= 4, rect.height >= 4 else {
             dismissOverlay()
@@ -313,6 +335,7 @@ private final class SelectionView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        ScreenTextCapture.debug("selection mouseDown")
         start = convert(event.locationInWindow, from: nil)
         selection = .zero
         needsDisplay = true
@@ -329,6 +352,7 @@ private final class SelectionView: NSView {
     override func mouseUp(with event: NSEvent) {
         defer { start = nil }
         guard selection.width >= 4, selection.height >= 4 else {
+            ScreenTextCapture.debug("selection mouseUp(<4pt) 视为取消")
             onCancel?()
             return
         }
@@ -336,7 +360,10 @@ private final class SelectionView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 { onCancel?() } else { super.keyDown(with: event) }
+        if event.keyCode == 53 {
+            ScreenTextCapture.debug("selection keyDown Esc")
+            onCancel?()
+        } else { super.keyDown(with: event) }
     }
 
     override func draw(_ dirtyRect: NSRect) {
