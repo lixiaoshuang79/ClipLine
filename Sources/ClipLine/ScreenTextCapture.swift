@@ -37,6 +37,10 @@ final class ScreenTextCapture {
         let front = NSWorkspace.shared.frontmostApplication
         previousApp = (front?.processIdentifier == getpid()) ? nil : front
         NSApp.activate()
+        if !NSApp.isActive {
+            // 合作式激活可能被拒（无点击上下文的激活请求）；框选必须拿到光标与键盘，强制激活兜底。
+            NSApp.activate(ignoringOtherApps: true)
+        }
         let overlay = OverlayPanel(screen: screen)
         overlay.onFinish = { [weak self] rect in self?.finish(rect: rect, screen: screen) }
         overlay.onCancel = { [weak self] in self?.dismissOverlay() }
@@ -275,14 +279,35 @@ private final class SelectionView: NSView {
 
     private var start: NSPoint?
     private var selection: NSRect = .zero
+    private var cursorTracking: NSTrackingArea?
 
     override var acceptsFirstResponder: Bool { true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let cursorTracking { removeTrackingArea(cursorTracking) }
+        // 非激活窗口里 resetCursorRects 不生效（macOS 只给前台 App 应用光标 rect），
+        // 系统随后会把光标打回原形。.activeAlways 的跟踪区是官方给"后台窗口也要管光标"
+        // 的机制：每次光标更新都回调 cursorUpdate，我们在那里强制十字。
+        let area = NSTrackingArea(rect: bounds,
+                                  options: [.activeAlways, .cursorUpdate, .mouseMoved, .mouseEnteredAndExited],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        cursorTracking = area
+    }
 
     override func resetCursorRects() {
         addCursorRect(bounds, cursor: .crosshair)
     }
 
-    /// 保险丝：光标 rect 在个别状态下不生效时，鼠标在遮罩上移动也主动设十字光标。
+    override func cursorUpdate(with event: NSEvent) {
+        NSCursor.crosshair.set()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        NSCursor.crosshair.set()
+    }
+
     override func mouseMoved(with event: NSEvent) {
         NSCursor.crosshair.set()
     }
