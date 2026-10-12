@@ -365,7 +365,7 @@ final class ScreenTextCapture {
         let alert = NSAlert()
         alert.messageText = "屏幕取字需要「屏幕录制」权限"
         alert.informativeText = """
-        在 系统设置 → 隐私与安全性 → 屏幕录制 里勾选 ClipLine，然后重新启动本应用。
+        在 系统设置 → 隐私与安全性 → 「录屏与系统录音」里勾选 ClipLine，然后重新启动本应用。
 
         若列表里已有 ClipLine 但仍报没权限：先选中它点减号移除，再重新添加（旧授权可能已失效）。
         """

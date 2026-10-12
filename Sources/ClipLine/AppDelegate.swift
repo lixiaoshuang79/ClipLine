@@ -236,7 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.informativeText = """
             内容已经复制到剪贴板了，现在手动按 ⌘V 也能粘贴。
 
-            想要"点卡片就自动粘贴"，请在 系统设置 → 隐私与安全性 → 辅助功能 里打开 ClipLine，然后重启本应用。
+            想要"点卡片就自动粘贴"：打开 系统设置 → 隐私与安全性，向下滚动找到「辅助功能」（在「录屏与系统录音」下面几行，别开错），把 ClipLine 打开，然后重启本应用。
             """
             alert.addButton(withTitle: "打开设置")
             alert.addButton(withTitle: "知道了")
