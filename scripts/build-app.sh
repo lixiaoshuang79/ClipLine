@@ -60,6 +60,19 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# 本地自用：ad-hoc 签名即可（重编译后辅助功能权限可能需要重新授权）。
-codesign --force --sign - "$APP" >/dev/null
+# 签名：优先固定身份（默认「ClipLine Dev」自签名；SIGN_IDENTITY 可覆盖）。
+# 为什么不用 ad-hoc：ad-hoc 的指定要求是 cdhash，每次重编译都变 → TCC
+# （屏幕录制/辅助功能）授权全丢；固定证书的指定要求只认证书哈希，跨重编译稳定。
+# 本机没有该身份时先跑 scripts/make-signing-identity.sh 生成。
+IDENTITY="${SIGN_IDENTITY:-}"
+if [ -z "$IDENTITY" ] && security find-certificate -c "ClipLine Dev" "$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1; then
+  IDENTITY="ClipLine Dev"
+fi
+if [ -n "$IDENTITY" ]; then
+  codesign --force --sign "$IDENTITY" "$APP" >/dev/null
+  echo "Signed with $IDENTITY (TCC 授权跨重编译保留)"
+else
+  codesign --force --sign - "$APP" >/dev/null
+  echo "Signed ad hoc（无固定身份；每次重编译会丢 TCC 授权，可跑 scripts/make-signing-identity.sh）"
+fi
 echo "Built $APP"
