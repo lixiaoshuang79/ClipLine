@@ -8,14 +8,15 @@ enum Ocr {
     static let maxCharacters = 20_000
 
     /// 识别一张 CGImage；没有文字或识别失败时返回 nil。CPU 密集，调用方放到后台队列。
-    static func recognize(_ image: CGImage) -> String? {
+    /// - Parameter minimumTextHeightPixels: 最小文字高度（像素）。屏幕抓图按显示缩放传 6×scale（对齐 Shottr，
+    ///   2x 屏即 12px，滤掉半视力的噪点级小字）；其他来源维持 6 的旧行为。
+    static func recognize(_ image: CGImage, minimumTextHeightPixels: CGFloat = 6) -> String? {
         let settings = Settings.shared
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.recognitionLanguages = settings.ocrLanguages
         request.usesLanguageCorrection = true
-        // 最小文字高度 ≈ 6px：滤掉噪点级的小字（对齐 Shottr 的实际做法，深反汇编 FUN_100003eac 所得）。
-        request.minimumTextHeight = Float(6.0 / CGFloat(max(image.height, 1)))
+        request.minimumTextHeight = Float(minimumTextHeightPixels / CGFloat(max(image.height, 1)))
         // 显式钉住 revision：跨系统版本结果稳定（Shottr 用 currentRevision，这里取等价的受支持最高版）。
         if let latest = VNRecognizeTextRequest.supportedRevisions.max() {
             request.revision = latest

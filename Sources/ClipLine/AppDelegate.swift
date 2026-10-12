@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var previousApp: NSRunningApplication?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if OcrProbe.runIfRequested() { return }   // CLIPLINE_OCR_PROBE=1：抓屏对拍照，不走正常 UI
         let view = NSHostingView(rootView: LineView(store: store))
         panel = LinePanel(content: view)
         panel.placeOnScreen()

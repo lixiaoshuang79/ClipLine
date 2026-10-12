@@ -35,40 +35,100 @@ final class ScreenTextCapture {
     }
 
     private func finish(rect: NSRect, screen: NSScreen) {
-        guard let overlay else { return }
+        guard overlay != nil else { return }
         guard rect.width >= 4, rect.height >= 4 else {
             dismissOverlay()
             return
         }
-        let windowID = CGWindowID(overlay.windowNumber)
         // 选区（遮罩窗口坐标，左下原点）→ Cocoa 全局坐标 → CG 显示坐标（左上原点，主屏为原点）。
-        // 直接用选区矩形抓「遮罩下方」那一次：不自己裁剪，多显示器排布与混合缩放都不受影响。
         let mainHeight = NSScreen.screens.first?.frame.height ?? screen.frame.height
         let inScreen = NSRect(x: rect.minX + screen.frame.minX, y: rect.minY + screen.frame.minY,
                               width: rect.width, height: rect.height)
         let cgRect = CGRect(x: inScreen.minX, y: mainHeight - inScreen.maxY,
                             width: inScreen.width, height: inScreen.height)
-        let region = CGWindowListCreateImage(cgRect, .optionOnScreenBelowWindow, windowID, [.bestResolution])
+        let scale = screen.backingScaleFactor
+        // 拖完立即收起遮罩（手感利落）；抓稳定帧放后台，此时是普通在屏抓取，遮罩已不在。
         dismissOverlay()
-        guard let region else {
-            guideToPermission()
-            return
-        }
-        guard region.width * region.height <= Int(Self.maxAreaPixels) else {
-            showToast("选区太大，换个小的试试", near: rect, on: screen)
-            return
-        }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let text = Ocr.recognize(region)
+            usleep(60_000)   // 让 WindowServer 走一帧，别抓到遮罩残影
+            let region = Self.captureStable(cgRect: cgRect)
             DispatchQueue.main.async {
                 guard let self else { return }
-                if let text, !text.isEmpty {
-                    self.deliver(text, near: rect, on: screen)
-                } else {
-                    self.showToast("没识别到文字", near: rect, on: screen)
+                guard let region else {
+                    self.guideToPermission()
+                    return
+                }
+                guard region.width * region.height <= Int(Self.maxAreaPixels) else {
+                    self.showToast("选区太大，换个小的试试", near: rect, on: screen)
+                    return
+                }
+                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                    let text = Ocr.recognize(region, minimumTextHeightPixels: 6 * scale)
+                    DispatchQueue.main.async {
+                        guard let self else { return }
+                        if let text, !text.isEmpty {
+                            self.deliver(text, near: rect, on: screen)
+                        } else {
+                            self.showToast("没识别到文字", near: rect, on: screen)
+                        }
+                    }
                 }
             }
         }
+    }
+
+    /// 抓「稳定帧」：连抓两帧做分块灰度比对，画面还在动（流式文字的渐入动画、滚动惯性）就等一拍重抓，最多三轮。
+    /// 治的坑：抓在动画中间帧上，字被半透明中间态糊掉，Vision 会把「温柔」识别成「泪柔」这类形近字。
+    static func captureStable(cgRect: CGRect) -> CGImage? {
+        func grab() -> CGImage? {
+            CGWindowListCreateImage(cgRect, .optionOnScreenOnly, kCGNullWindowID, [.bestResolution])
+        }
+        var latest = grab()
+        for _ in 0..<2 {
+            guard let a = latest else { return nil }
+            usleep(180_000)
+            guard let b = grab() else { return a }
+            latest = b
+            if blockDelta(a, b) < 1.0 { return b }
+            usleep(360_000)
+        }
+        return latest
+    }
+
+    /// 两帧的分块灰度平均绝对差，取第 90 百分位：局部在动才算动（时钟跳秒之类的小块干扰不计）。
+    static func blockDelta(_ a: CGImage, _ b: CGImage) -> Double {
+        let w = 128
+        let h = max(1, Int((Double(a.height) / Double(max(a.width, 1)) * 128).rounded()))
+        guard a.width > 0, b.width > 0 else { return 0 }
+        func gray(_ img: CGImage) -> [UInt8] {
+            var buf = [UInt8](repeating: 0, count: w * h)
+            buf.withUnsafeMutableBytes { raw in
+                guard let ctx = CGContext(data: raw.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                                          bytesPerRow: w, space: CGColorSpaceCreateDeviceGray(),
+                                          bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return }
+                ctx.interpolationQuality = .low
+                ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+            }
+            return buf
+        }
+        let pa = gray(a), pb = gray(b)
+        var deltas: [Double] = []
+        var y = 0
+        while y + 8 <= h {
+            var x = 0
+            while x + 8 <= w {
+                var sum = 0
+                for yy in y..<(y + 8) {
+                    for xx in x..<(x + 8) { sum += abs(Int(pa[yy * w + xx]) - Int(pb[yy * w + xx])) }
+                }
+                deltas.append(Double(sum) / 64)
+                x += 8
+            }
+            y += 8
+        }
+        guard !deltas.isEmpty else { return 0 }
+        deltas.sort()
+        return deltas[min(deltas.count - 1, Int(Double(deltas.count) * 0.9))]
     }
 
     private func deliver(_ text: String, near rect: NSRect, on screen: NSScreen) {
@@ -76,8 +136,10 @@ final class ScreenTextCapture {
                             snapshot: [[.string: Data(text.utf8)]], fingerprint: "t:" + text)
         if let snapshot = item.snapshot { Paster.copyToPasteboard(snapshot) }
         store.ingestScreenText(item)
-        let summary = text.count > 16 ? String(text.prefix(16)) + "…" : text
-        showToast("已取字：\(summary)（已复制）", near: rect, on: screen)
+        // 摘要不用省略号（会被误读成识别结果里带了"…"）：短文本给内容，长文本给字数。
+        let flat = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let preview = !flat.contains(where: \.isNewline) && flat.count <= 18 ? "「\(flat)」" : "\(flat.count) 字"
+        showToast("已取字 \(preview) · 已复制", near: rect, on: screen)
     }
 
     private func guideToPermission() {
@@ -217,8 +279,9 @@ private final class SelectionView: NSView {
         border.lineWidth = 1.5
         border.stroke()
 
-        // 尺寸提示贴在选区左上角外侧。
-        let text = "\(Int(selection.width)) × \(Int(selection.height))" as NSString
+        // 尺寸提示贴在选区左上角外侧（像素数，同 Shottr 的 px 标注）。
+        let pixelScale = window?.backingScaleFactor ?? 2
+        let text = "\(Int(selection.width * pixelScale)) × \(Int(selection.height * pixelScale)) px" as NSString
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium),
             .foregroundColor: NSColor.white,
