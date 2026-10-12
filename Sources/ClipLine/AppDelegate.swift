@@ -70,6 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
                 if mode == "direct" {
                     self?.screenText.begin()
+                } else if mode == "selection" {
+                    self?.screenText.debugShowOverlayWithSelection(NSRect(x: 420, y: 300, width: 640, height: 300))
                 } else {
                     let source = CGEventSource(stateID: .hidSystemState)
                     for isDown in [true, false] {

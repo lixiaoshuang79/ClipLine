@@ -230,6 +230,26 @@ final class ScreenTextCapture {
         return true
     }
 
+    /// 调试：CLIPLINE_OCR_RUN_DEBUG=selection 用——展示遮罩并画一个示例选区，供截图核验框选观感。
+    func debugShowOverlayWithSelection(_ rect: NSRect) {
+        guard let screen = LinePanel.screenUnderPointer() ?? NSScreen.main else { return }
+        let overlay = OverlayPanel(screen: screen)
+        self.overlay = overlay
+        overlay.makeKeyAndOrderFront(nil)
+        overlay.debugSetSelection(rect)
+        Self.debug("debug: pointer=\(NSEvent.mouseLocation) screen=\(screen.frame) overlayFrame=\(overlay.frame) visible=\(overlay.isVisible) key=\(overlay.isKeyWindow)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak overlay] in
+            guard let overlay else { return }
+            let windowID = CGWindowID(overlay.windowNumber)
+            if let image = CGWindowListCreateImage(.null, .optionIncludingWindow, windowID,
+                                                   [.boundsIgnoreFraming, .bestResolution]),
+               let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) {
+                try? data.write(to: URL(fileURLWithPath: "/tmp/ocr-overlay-window.png"))
+                Self.debug("debug: 遮罩窗口自捕获 \(image.width)x\(image.height)")
+            }
+        }
+    }
+
     /// 选区附近的轻提示，1.6 秒后自动消失。
     private func showToast(_ message: String, near rect: NSRect, on screen: NSScreen) {
         toast?.orderOut(nil)
@@ -269,8 +289,10 @@ final class ScreenTextCapture {
 private final class OverlayPanel: NSPanel {
     var onFinish: ((NSRect) -> Void)?
     var onCancel: (() -> Void)?
+    private let selectionView: SelectionView
 
     init(screen: NSScreen) {
+        selectionView = SelectionView(frame: NSRect(origin: .zero, size: screen.frame.size))
         super.init(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel],
                    backing: .buffered, defer: false)
         isOpaque = false
@@ -281,10 +303,14 @@ private final class OverlayPanel: NSPanel {
         isReleasedWhenClosed = false
         animationBehavior = .none
         acceptsMouseMovedEvents = true
-        let selection = SelectionView(frame: NSRect(origin: .zero, size: screen.frame.size))
-        selection.onFinish = { [weak self] rect in self?.onFinish?(rect) }
-        selection.onCancel = { [weak self] in self?.onCancel?() }
-        contentView = selection
+        selectionView.onFinish = { [weak self] rect in self?.onFinish?(rect) }
+        selectionView.onCancel = { [weak self] in self?.onCancel?() }
+        contentView = selectionView
+    }
+
+    /// 调试：画一个示例选区供截图核验框选观感。
+    func debugSetSelection(_ rect: NSRect) {
+        selectionView.debugSelect(rect)
     }
 
     override var canBecomeKey: Bool { true }
@@ -341,6 +367,13 @@ private final class SelectionView: NSView {
         needsDisplay = true
     }
 
+    /// 调试用：直接摆一个选区。
+    func debugSelect(_ rect: NSRect) {
+        start = rect.origin
+        selection = rect
+        needsDisplay = true
+    }
+
     override func mouseDragged(with event: NSEvent) {
         guard let start else { return }
         let now = convert(event.locationInWindow, from: nil)
@@ -382,16 +415,23 @@ private final class SelectionView: NSView {
             hint.draw(at: NSPoint(x: pill.minX + 14, y: pill.minY + 5.5), withAttributes: attrs)
             return
         }
-        // 拖框中：不遮暗屏幕（对齐 Shottr 的框选观感），只画选区框线——外深内白两圈，深浅底色都看得清。
+        // 拖框中：不遮暗屏幕（对齐 Shottr 的框选观感）。选区要有投影 + 双色描边——
+        // 白色网页上深线才看得见、深色界面上白线才看得见，只画一种必有隐形底色。
         guard selection.width > 0, selection.height > 0 else { return }
-        NSColor.black.withAlphaComponent(0.5).setStroke()
-        let outer = NSBezierPath(rect: selection.insetBy(dx: -1, dy: -1))
-        outer.lineWidth = 3.5
-        outer.stroke()
-        NSColor.white.setStroke()
-        let border = NSBezierPath(rect: selection.insetBy(dx: 0.75, dy: 0.75))
-        border.lineWidth = 1.5
-        border.stroke()
+        if let context = NSGraphicsContext.current?.cgContext {
+            context.saveGState()
+            context.setShadow(offset: .zero, blur: 12,
+                              color: NSColor.black.withAlphaComponent(0.55).cgColor)
+            NSColor(white: 0.05, alpha: 0.9).setStroke()
+            let outline = NSBezierPath(rect: selection.insetBy(dx: 1, dy: 1))
+            outline.lineWidth = 2
+            outline.stroke()
+            context.restoreGState()
+        }
+        NSColor.white.withAlphaComponent(0.9).setStroke()
+        let inner = NSBezierPath(rect: selection.insetBy(dx: 4, dy: 4))
+        inner.lineWidth = 1.5
+        inner.stroke()
 
         // 尺寸提示贴在选区左上角外侧（像素数，同 Shottr 的 px 标注）。
         let pixelScale = window?.backingScaleFactor ?? 2
