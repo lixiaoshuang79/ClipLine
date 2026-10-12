@@ -1,8 +1,9 @@
 import AppKit
 
-/// 屏幕顶部的透明条：浮在所有普通窗口之上、跨 Space、点击不激活本 App。
+/// 剪贴板面板的窗口基类：透明、浮在所有普通窗口之上、跨 Space、点击不激活本 App。
 /// 结构改编自 Tendedero（MIT）；差异：可成为 key window 以接收键盘，击键默认进搜索框。
-final class LinePanel: NSPanel {
+/// 具体样式由子类决定：`LinePanel`（顶部晾衣绳）、`PastePanel`（底部卡片）。
+class ClipPanel: NSPanel {
     var onEscape: (() -> Void)?
     var onEnter: (() -> Void)?
     var onLeft: (() -> Void)?
@@ -106,10 +107,31 @@ final class LinePanel: NSPanel {
             ?? NSScreen.main ?? NSScreen.screens.first
     }
 
+    /// 默认（晾衣绳）：挂在指针所在的屏幕顶部。
     func placeOnScreen(_ screen: NSScreen? = nil) {
         guard let visible = (screen ?? LinePanel.screenUnderPointer())?.visibleFrame else { return }
         let target = NSRect(x: visible.minX, y: visible.maxY - Layout.panelHeight,
                             width: visible.width, height: Layout.panelHeight)
+        if frame != target { setFrame(target, display: true) }
+    }
+}
+
+/// 顶部晾衣绳面板（默认样式）。
+final class LinePanel: ClipPanel {}
+
+/// 「底部卡片（Paste 式）」面板：贴可见区下沿（Dock 之上）、带投影，其余行为与晾衣绳共用基类。
+final class PastePanel: ClipPanel {
+    override init(content: NSView) {
+        super.init(content: content)
+        hasShadow = true
+    }
+
+    /// 版式参照 Paste 快捷面板实拍：左右各留 6pt、贴可见区下沿（`~/claude/projects/common/2026-10-12/paste样式逆向/REFERENCE.md`）。
+    override func placeOnScreen(_ screen: NSScreen? = nil) {
+        guard let visible = (screen ?? LinePanel.screenUnderPointer())?.visibleFrame else { return }
+        let width = visible.width - PastePanelView.sideMargin * 2
+        let target = NSRect(x: visible.minX + PastePanelView.sideMargin, y: visible.minY,
+                            width: width, height: PastePanelView.panelHeight)
         if frame != target { setFrame(target, display: true) }
     }
 }

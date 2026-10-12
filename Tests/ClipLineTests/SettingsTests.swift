@@ -16,6 +16,7 @@ final class SettingsTests: XCTestCase {
         XCTAssertTrue(settings.ocrRemoveBreaks)
         XCTAssertEqual(settings.maxItems, 500)
         XCTAssertEqual(settings.imageBudgetMB, 256)
+        XCTAssertEqual(settings.panelStyle, .rope)
     }
 
     func testRoundTrip() {
@@ -25,8 +26,10 @@ final class SettingsTests: XCTestCase {
         settings.maxItems = 1000
         settings.ocrRemoveBreaks = false
         settings.ocrPrimaryLanguage = "ja-JP"
+        settings.panelStyle = .paste
 
         let reloaded = Settings(defaults: defaults)
+        XCTAssertEqual(reloaded.panelStyle, .paste)
         XCTAssertEqual(reloaded.revealHotKey, HotKey.Spec(keyCode: 15, modifiers: cmdKey | shiftKey))
         XCTAssertEqual(reloaded.maxItems, 1000)
         XCTAssertFalse(reloaded.ocrRemoveBreaks)

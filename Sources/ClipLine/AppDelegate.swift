@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let store = AppDelegate.makeStore()
     private let settings = Settings.shared
     private var panel: LinePanel!
+    private var pastePanel: PastePanel!
     private var revealHotKey: HotKey?
     private var screenTextHotKey: HotKey?
     /// 自检（CLIPLINE_OCR_RUN_DEBUG=script）走私有剪贴板，不动用户的剪贴板。
@@ -20,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }()
     private let settingsWindow = SettingsWindowController()
     private var settingsObserver: AnyCancellable?
+    private var styleObserver: AnyCancellable?
     private var statusItem: NSStatusItem!
     private var outsideMonitor: Any?
     private var orderOutWork: DispatchWorkItem?
@@ -28,17 +30,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if OcrResultPanel.snapshotDemoIfRequested() { return }   // CLIPLINE_OCR_RESULT_SNAPSHOT=<目录>：确认卡各状态自截图
-        let view = NSHostingView(rootView: LineView(store: store))
-        panel = LinePanel(content: view)
+        panel = LinePanel(content: NSHostingView(rootView: LineView(store: store)))
         panel.placeOnScreen()
+        pastePanel = PastePanel(content: NSHostingView(rootView: PastePanelView(store: store)))
+        pastePanel.placeOnScreen()
 
         store.onRequestTuck = { [weak self] in self?.tuck() }
         store.onRequestPaste = { [weak self] item in self?.pasteAndTuck(item) }
 
-        panel.onEscape = { [weak self] in self?.store.escape() }
-        panel.onEnter = { [weak self] in self?.store.pasteSelected() }
-        panel.onLeft = { [weak self] in self?.store.select(offset: -1) }
-        panel.onRight = { [weak self] in self?.store.select(offset: 1) }
+        for board in [panel as ClipPanel, pastePanel as ClipPanel] {
+            board.onEscape = { [weak self] in self?.store.escape() }
+            board.onEnter = { [weak self] in self?.store.pasteSelected() }
+            board.onLeft = { [weak self] in self?.store.select(offset: -1) }
+            board.onRight = { [weak self] in self?.store.select(offset: 1) }
+        }
 
         // 自检实例不抢全局热键（正在用的那份 ClipLine 还要用）。
         if Self.selfTestDirectory == nil { installHotKeys() }
@@ -49,6 +54,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 self.store.updateRetention(self.settings.retention)
             }
+        // 换面板样式：先把当前面板收起，下次唤出用新样式。
+        styleObserver = settings.$panelStyle.dropFirst().sink { [weak self] _ in
+            self?.tuck(immediate: true)
+        }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem.button {
@@ -164,7 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let path = ProcessInfo.processInfo.environment["CLIPLINE_SNAPSHOT"] else { return }
         let delay = Double(ProcessInfo.processInfo.environment["CLIPLINE_SNAPSHOT_DELAY"] ?? "") ?? 1.2
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-            let windowID = CGWindowID(self.panel.windowNumber)
+            let windowID = CGWindowID(self.activePanel.windowNumber)
             guard windowID > 0,
                   let image = CGWindowListCreateImage(.null, .optionIncludingWindow, windowID,
                                                        [.boundsIgnoreFraming, .bestResolution]) else {
@@ -183,18 +192,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: 面板显隐
 
+    /// 当前生效的面板（设置里「面板样式」二选一；CLIPLINE_PANEL_STYLE 可临时覆盖）。
+    private var activePanel: ClipPanel {
+        settings.effectivePanelStyle == .paste ? pastePanel : panel
+    }
+
     private func reveal() {
         let front = NSWorkspace.shared.frontmostApplication
         previousApp = (front?.processIdentifier == getpid()) ? nil : front
-        panel.placeOnScreen()
+        let board = activePanel
+        board.placeOnScreen()
         if store.selectedItem == nil { store.selectedID = store.shown.first?.id }
         store.revealed = true
-        panel.ignoresMouseEvents = false
-        panel.orderFrontRegardless()
+        board.ignoresMouseEvents = false
+        board.orderFrontRegardless()
         // 自截图调试时不抢键盘：否则前台 App 里正在打的字会落进搜索框。
         if ProcessInfo.processInfo.environment["CLIPLINE_SNAPSHOT"] == nil {
-            panel.makeKey()
-            panel.focusSearch()
+            board.makeKey()
+            board.focusSearch()
         }
         installOutsideMonitor()
     }
@@ -203,11 +218,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard store.revealed else { return }
         store.revealed = false
         removeOutsideMonitor()
+        let board = activePanel   // 记住收起哪一块：等待期间换样式也把这块收干净
         let work = DispatchWorkItem { [weak self] in
             guard let self, !self.store.revealed else { return }
-            self.panel.ignoresMouseEvents = true
-            self.panel.orderOut(nil)
-            // 每次展开都从完整的绳开始；等滑出后再清，免得收起途中卡片重排。
+            board.ignoresMouseEvents = true
+            board.orderOut(nil)
+            // 每次展开都从完整列表开始；等滑出后再清，免得收起途中卡片重排。
             if self.store.fieldHasText || !self.store.query.isEmpty { self.store.replaceQuery("") }
         }
         orderOutWork?.cancel()

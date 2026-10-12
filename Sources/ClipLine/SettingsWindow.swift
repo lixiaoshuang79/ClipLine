@@ -26,6 +26,17 @@ struct SettingsView: View {
                         .foregroundStyle(.red)
                 }
             }
+            Section("面板样式") {
+                Picker("样式", selection: $settings.panelStyle) {
+                    Text("晾衣绳（顶部）").tag(Settings.PanelStyle.rope)
+                    Text("底部卡片（Paste 式）").tag(Settings.PanelStyle.paste)
+                }
+                Text(settings.panelStyle == .rope
+                     ? "按 ⌃⌥V 从菜单栏下方垂下绳与卡片。"
+                     : "底部悬浮面板：横向大卡、来源色头部，参照 Paste 的快捷面板。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section("屏幕取字") {
                 Picker("识别主语言", selection: $settings.ocrPrimaryLanguage) {
                     ForEach(Settings.ocrLanguageOptions, id: \.id) { option in

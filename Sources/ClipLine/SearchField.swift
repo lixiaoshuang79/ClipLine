@@ -147,6 +147,6 @@ final class ClipSearchField: NSTextField {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        (window as? LinePanel)?.adopt(searchField: self)
+        (window as? ClipPanel)?.adopt(searchField: self)
     }
 }

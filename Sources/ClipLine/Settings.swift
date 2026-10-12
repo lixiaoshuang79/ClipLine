@@ -6,10 +6,15 @@ import Combine
 final class Settings: ObservableObject {
     static let shared = Settings()
 
+    /// 面板样式：顶部晾衣绳 / 底部卡片（Paste 式）。
+    enum PanelStyle: String { case rope, paste }
+
     /// 唤出/收起剪贴板绳，默认 ⌃⌥V。
     @Published var revealHotKey: HotKey.Spec { didSet { save(revealHotKey, "revealHotKey") } }
     /// 屏幕取字，默认 ⌃⌥O。
     @Published var screenTextHotKey: HotKey.Spec { didSet { save(screenTextHotKey, "screenTextHotKey") } }
+    /// 面板样式（晾衣绳 / 底部卡片）。
+    @Published var panelStyle: PanelStyle { didSet { defaults.set(panelStyle.rawValue, forKey: "panelStyle") } }
     /// 点卡片后是否自动合成 ⌘V（关掉 = 只复制到剪贴板）。
     @Published var pasteAutomatically: Bool { didSet { defaults.set(pasteAutomatically, forKey: "pasteAutomatically") } }
     /// OCR 主语言（对齐 Shottr 的做法：主语言在前、英语兜底）。
@@ -46,12 +51,20 @@ final class Settings: ObservableObject {
         Retention(maxItems: maxItems, imageBudget: imageBudgetMB << 20, maxStoredBytes: 64 << 20)
     }
 
+    /// 当前生效的面板样式：CLIPLINE_PANEL_STYLE=paste|rope 可临时覆盖（调试用，不写偏好）。
+    var effectivePanelStyle: PanelStyle {
+        if let raw = ProcessInfo.processInfo.environment["CLIPLINE_PANEL_STYLE"],
+           let style = PanelStyle(rawValue: raw) { return style }
+        return panelStyle
+    }
+
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         revealHotKey = Self.load(defaults, "revealHotKey") ?? Self.defaultReveal
         screenTextHotKey = Self.load(defaults, "screenTextHotKey") ?? Self.defaultScreenText
+        panelStyle = PanelStyle(rawValue: defaults.string(forKey: "panelStyle") ?? "") ?? .rope
         pasteAutomatically = defaults.object(forKey: "pasteAutomatically") as? Bool ?? true
         ocrPrimaryLanguage = defaults.string(forKey: "ocrPrimaryLanguage") ?? "zh-Hans"
         ocrRemoveBreaks = defaults.object(forKey: "ocrRemoveBreaks") as? Bool ?? true
