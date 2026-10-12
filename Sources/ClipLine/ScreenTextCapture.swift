@@ -36,22 +36,25 @@ final class ScreenTextCapture {
 
     private func finish(rect: NSRect, screen: NSScreen) {
         guard let overlay else { return }
+        guard rect.width >= 4, rect.height >= 4 else {
+            dismissOverlay()
+            return
+        }
         let windowID = CGWindowID(overlay.windowNumber)
-        // 先抓「遮罩下面」的屏幕内容（遮罩本身不入镜），再收起遮罩。
-        let full = CGWindowListCreateImage(.null, .optionOnScreenBelowWindow, windowID, [.bestResolution])
-        dismissOverlay()
-        guard rect.width >= 4, rect.height >= 4, let full else { return }
-
-        let scale = CGFloat(full.width) / screen.frame.width
-        // 选区（窗口坐标，左下原点）→ 屏幕坐标 → 图像像素坐标（图像以主屏左上为原点）。
+        // 选区（遮罩窗口坐标，左下原点）→ Cocoa 全局坐标 → CG 显示坐标（左上原点，主屏为原点）。
+        // 直接用选区矩形抓「遮罩下方」那一次：不自己裁剪，多显示器排布与混合缩放都不受影响。
+        let mainHeight = NSScreen.screens.first?.frame.height ?? screen.frame.height
         let inScreen = NSRect(x: rect.minX + screen.frame.minX, y: rect.minY + screen.frame.minY,
                               width: rect.width, height: rect.height)
-        let mainHeight = NSScreen.screens.first?.frame.height ?? screen.frame.height
-        let crop = CGRect(x: inScreen.minX * scale,
-                          y: (mainHeight - inScreen.maxY) * scale,
-                          width: inScreen.width * scale,
-                          height: inScreen.height * scale)
-        guard crop.width * crop.height <= Self.maxAreaPixels, let region = full.cropping(to: crop) else {
+        let cgRect = CGRect(x: inScreen.minX, y: mainHeight - inScreen.maxY,
+                            width: inScreen.width, height: inScreen.height)
+        let region = CGWindowListCreateImage(cgRect, .optionOnScreenBelowWindow, windowID, [.bestResolution])
+        dismissOverlay()
+        guard let region else {
+            guideToPermission()
+            return
+        }
+        guard region.width * region.height <= Int(Self.maxAreaPixels) else {
             showToast("选区太大，换个小的试试", near: rect, on: screen)
             return
         }
