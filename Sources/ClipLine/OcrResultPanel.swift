@@ -267,9 +267,9 @@ final class OcrResultPanel: NSPanel {
     }
 
     private static let demoText = """
-    生成「ClipLine Dev」自签名证书导入登录钥匙串（私钥只存在钥匙串里，
-    你能感受到别人没有说出口的情绪，这是一份珍贵的敏锐。
-    OCR result panel demo — ClipLine 2026-10-12
+    把最近复制过的内容挂在菜单栏下面的一条绳上：
+    文本、链接、图片都在，卡片按来源 App 的色系染色。
+    Everything stays local — no account, no network.
     """
 }
 

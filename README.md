@@ -22,16 +22,21 @@ Every copy becomes a card, pegged to a line under the menu bar — tinted with t
 - **Search as you type** — just start typing. Matching is case- and width-insensitive, space separates terms (all must match), and it covers text, file names, source app names — and **text inside images** via on-device OCR (Simplified Chinese + English).
 - **Private by design** — history lives in a local SQLite database. No account, no network, no analytics. Clips marked concealed/transient by password managers are never recorded or stored.
 - **Pin, drag, launch at login** — pin a card to keep it forever (brass clothespin; exempt from eviction and from "Clear History"); drag cards out into any app or drop content in; optional launch at login.
+- **Screen text capture** — press `⌃⌥O` and the screen freezes under a marquee that never dims your display; drag over any text (a live coordinate readout follows the cursor, hold `Space` to move the selection). On release the text is recognized on-device, copied, added to the line, and confirmed by a card at the top with a one-tap 「去换行」 (cut line breaks).
+- **Settings window** — rebind both hot keys, choose the OCR language, toggle line-break removal, switch between auto-paste and copy-only, and set history limits.
 
 | | |
 |---|---|
-| ![dark mode](docs/images/panel-dark.png) | |
+| ![dark mode](docs/images/panel-dark.png) | ![screen text capture](docs/images/screen-capture.png) |
+| ![screen text capture confirmation card](docs/images/screen-capture-card.png) | |
 
 ## Install
 
 Grab `ClipLine-<version>.dmg` from the [latest release](https://github.com/lixiaoshuang79/ClipLine/releases/latest), open it, and drag ClipLine into Applications.
 
-The app is ad-hoc signed (not notarized), so macOS will block the first launch — you'll see 「未打开"ClipLine" / Apple 无法验证…」. To allow it: **System Settings → Privacy & Security → "Open Anyway" (系统设置 → 隐私与安全性 → 在「安全性」一栏点「仍要打开」)**. On macOS 14 and earlier you can instead right-click the app → Open.
+The app is signed with a local certificate (not notarized), so macOS will block the first launch — you'll see 「未打开"ClipLine" / Apple 无法验证…」. To allow it: **System Settings → Privacy & Security → "Open Anyway" (系统设置 → 隐私与安全性 → 在「安全性」一栏点「仍要打开」)**. On macOS 14 and earlier you can instead right-click the app → Open.
+
+Every release is signed with the same fixed certificate, so permissions you grant once — Screen Recording for text capture, Accessibility for auto-paste — survive future updates.
 
 Then press `⌃⌥V` to bring down the line, and grant Accessibility permission when prompted (see below).
 
@@ -51,7 +56,7 @@ scripts/build-app.sh          # builds build/ClipLine.app
 open build/ClipLine.app
 ```
 
-Locally built apps are ad-hoc signed. To paste automatically, grant Accessibility permission the first time you click a card (System Settings → Privacy & Security → Accessibility); without it, clicking a card only copies to the clipboard. `scripts/make-dmg.sh` packages a distributable DMG.
+Locally built apps are ad-hoc signed (the build script uses a local "ClipLine Dev" signing identity when one exists in your keychain). To paste automatically, grant Accessibility permission the first time you click a card (System Settings → Privacy & Security → Accessibility); without it, clicking a card only copies to the clipboard. `scripts/make-dmg.sh` packages a distributable DMG.
 
 ## Usage
 
@@ -64,6 +69,8 @@ Locally built apps are ad-hoc signed. To paste automatically, grant Accessibilit
 | Remove | Hover a card → `×` (top-left) |
 | Drag out | Drag any card into an editor, chat window, or Finder — the line keeps its copy |
 | Drag in | Drop text / images / files onto the panel to add them to the line |
+| Screen text capture | `⌃⌥O` → drag over any text (`Space` moves the selection, `Esc` / right-click cancels) |
+| Settings | Menu-bar icon (right-click) → 设置 |
 | Launch at login | Menu-bar icon (right-click) → 登录时启动 |
 | Clear history | Menu-bar icon (right-click) → 清空历史 (pinned cards are kept) |
 
@@ -78,7 +85,6 @@ Locally built apps are ad-hoc signed. To paste automatically, grant Accessibilit
 ## Known limitations
 
 - Dragging *multiple* files out delivers one of them (an `NSItemProvider` limitation); single files and folders are fine.
-- After rebuilding or reinstalling, the Accessibility grant may need to be re-checked (ad-hoc signing).
 - OCR text becomes searchable a second or two after an image is captured.
 
 ## Credits & license

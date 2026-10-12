@@ -25,7 +25,7 @@ final class ScreenTextSelfTest {
         // 等启动后的抓屏预热跑完，测到的 begin 耗时才接近常驻后台时按热键的真实情况。
         await sleep(2.2)
 
-        let lines = ["屏幕取字自检：温柔地生成一段文字", "Shottr style OCR self test 2026", "第三行：剪贴板绳 ClipLine"]
+        let lines = ["ClipLine 屏幕取字示例", "把最近复制的内容挂在菜单栏下面的一条绳上。", "Everything stays local. No account, no network."]
         let fixture = makeFixture(lines, on: screen)
         let shotArea = fixture.frame.insetBy(dx: -90, dy: -70)
         let cardArea = NSRect(x: screen.frame.midX - 300, y: screen.visibleFrame.maxY - 110, width: 600, height: 110)
