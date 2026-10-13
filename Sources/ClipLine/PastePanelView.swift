@@ -519,12 +519,17 @@ private struct PasteCardBody: View {
 
     private var mark: Color { palette.mark(scheme) }
 
+    /// 卡面只放得下十来行：文本只排前这么多字（同绳式 `TextBody.tidy`），代码每行只取前这么多字，
+    /// 几十万字的正文不再在每次重绘时整篇建 AttributedString、排版。
+    private static let textPreviewCharacters = 1200
+    private static let codeLineCharacters = 200
+
     var body: some View {
         Group {
             switch item.kind {
             case .text(let text):
                 fadedPreview {
-                    Text(query.marked(text, mark: mark))
+                    Text(query.marked(String(text.prefix(Self.textPreviewCharacters)), mark: mark))
                         .font(.system(size: 12))
                         .lineSpacing(3)
                         .foregroundStyle(palette.ink)
@@ -559,9 +564,9 @@ private struct PasteCardBody: View {
     }
 
     private func codePreview(_ code: String) -> some View {
-        let lines = code.replacingOccurrences(of: "\t", with: "  ")
-            .split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+        let lines = code.split(maxSplits: 12, omittingEmptySubsequences: false, whereSeparator: \.isNewline)
             .prefix(12)
+            .map { $0.prefix(Self.codeLineCharacters).replacingOccurrences(of: "\t", with: "  ") }
         return fadedPreview {
             VStack(alignment: .leading, spacing: 1) {
                 ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
