@@ -452,8 +452,8 @@ final class ClipStore: ObservableObject {
         }
     }
 
-    /// 后台读库、解缩略图，回主线程并入历史。
-    private func loadArchive() {
+    /// 后台读库、解缩略图，回主线程并入历史。由 `start()` 调用（测试可直接调）。
+    func loadArchive() {
         guard let archive else {
             Self.log("loaded 0 items from store (\(archiveNote))")
             return
@@ -479,34 +479,65 @@ final class ClipStore: ObservableObject {
 
     private func adopt(_ records: [ClipRecord], images: [UUID: (thumb: NSImage, pixelSize: CGSize)],
                        boards boardRecords: [PinboardRecord], memberships: [(pinboard: UUID, clip: UUID, position: Int)]) {
-        let present = Set(items.map(\.fingerprint))
+        let present = Dictionary(items.map { ($0.fingerprint, $0.id) }, uniquingKeysWith: { first, _ in first })
         var loaded: [ClipItem] = []
         var broken: [UUID] = []
+        // 加载期间又复制了一遍的旧条目：磁盘旧行 id → 内存里的新副本 id。新副本转存时会顶掉旧行
+        // （级联清掉归属），所以旧行的置顶与标签要挂到新副本上并重新落盘（同 `ingest` 的重新复制）。
+        var renewed: [UUID: UUID] = [:]
+        var renewedPinned: Set<UUID> = []
         for record in records {
             guard let item = ClipItem(record: record, image: images[record.id]) else {
                 broken.append(record.id)
                 continue
             }
-            guard !present.contains(item.fingerprint) else { continue }
+            if let current = present[item.fingerprint] {
+                if current != record.id {
+                    renewed[record.id] = current
+                    if record.pinned { renewedPinned.insert(current) }
+                }
+                continue
+            }
             _ = SourceTint.of(item.source)
             loaded.append(item)
         }
 
         // 标签板与归属：条目从磁盘带回来的标签在内存里补上（它们不参与历史流转）。
+        // 加载前就在内存里建的标签（磁盘上还没有）保留在后面。
         let boardIDs = Set(boardRecords.map(\.id))
+        let earlyBoards = boards.filter { !boardIDs.contains($0.id) }
+        let earlyMembers = boardMembers.filter { !boardIDs.contains($0.key) }
         boards = boardRecords.map {
             Pinboard(id: $0.id, name: $0.name, color: PinboardColor(rawValue: $0.color) ?? .gray, position: $0.position)
-        }
+        } + earlyBoards
         var byBoard: [UUID: [(id: UUID, position: Int)]] = [:]
         var byClip: [UUID: Set<UUID>] = [:]
         for row in memberships where boardIDs.contains(row.pinboard) {
-            byBoard[row.pinboard, default: []].append((row.clip, row.position))
-            byClip[row.clip, default: []].insert(row.pinboard)
+            let clip = renewed[row.clip] ?? row.clip
+            byBoard[row.pinboard, default: []].append((clip, row.position))
+            byClip[clip, default: []].insert(row.pinboard)
         }
         boardMembers = byBoard.mapValues { $0.sorted { $0.position > $1.position }.map(\.id) }
+            .merging(earlyMembers) { disk, _ in disk }
         for index in loaded.indices { loaded[index].boards = byClip[loaded[index].id] ?? [] }
 
-        commit(items + loaded)
+        // 新副本接过旧行的置顶与标签，并补写到磁盘（排在新副本的转存之后）。
+        var current = items
+        let renewedIDs = Set(renewed.values)
+        for index in current.indices where renewedIDs.contains(current[index].id) {
+            let id = current[index].id
+            let carried = (byClip[id] ?? []).subtracting(current[index].boards)
+            let pin = renewedPinned.contains(id) && !current[index].pinned
+            guard pin || !carried.isEmpty else { continue }
+            current[index].boards.formUnion(carried)
+            if pin { current[index].pinned = true }
+            persist { archive in
+                if pin { try archive.setPinned(id: id, pinned: true) }
+                for board in carried { try archive.addMembership(pinboard: board, clip: id) }
+            }
+        }
+
+        commit(current + loaded)
         if !broken.isEmpty { persist { try $0.delete(ids: broken) } }
         let kept = Set(items.map(\.id))
         Self.log("loaded \(loaded.filter { kept.contains($0.id) }.count) items from store")

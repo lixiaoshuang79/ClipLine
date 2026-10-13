@@ -289,6 +289,47 @@ final class PinboardTests: XCTestCase {
         store.close()
     }
 
+    func testCopyDuringLaunchKeepsPinAndBoardOfDiskCopy() throws {
+        // 回归：启动读库期间又复制了磁盘上已有的内容——新副本转存时顶掉旧行（级联清掉归属），
+        // 并入历史时旧行又被当成重复跳过，置顶与标签就都丢了。
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var old = Self.textItem("甲", at: 1)
+        old.pinned = true
+        let board = PinboardRecord(id: UUID(), name: "B", color: "red", position: 0)
+        do {
+            let archive = try ClipArchive(directory: directory)
+            try archive.insert(XCTUnwrap(old.record))
+            try archive.insertPinboard(board)
+            try archive.addMembership(pinboard: board.id, clip: old.id)
+            archive.close()
+        }
+
+        let store = ClipStore(archive: try ClipArchive(directory: directory))
+        store.loadArchive()                        // 读库在 io 上排队，并入历史要回主线程
+        store.ingest(Self.textItem("甲", at: 5))    // 加载窗口里重新复制了一遍
+        let early = store.addBoard(name: "早建")    // 加载完成前新建的标签
+        let renewedID = store.items[0].id
+        let deadline = Date().addingTimeInterval(5)
+        while store.boards.count < 2, Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        store.flush()
+
+        XCTAssertEqual(Set(store.boards.map(\.id)), [board.id, early.id], "磁盘上的标签与加载前新建的标签都在")
+        XCTAssertEqual(store.items.map(\.id), [renewedID], "同指纹仍只留新副本")
+        XCTAssertTrue(store.items[0].pinned, "置顶跟着新副本走")
+        XCTAssertEqual(store.items[0].boards, [board.id], "标签归属跟着新副本走")
+        store.activeBoardID = board.id
+        XCTAssertEqual(store.shown.map(\.id), [renewedID])
+
+        let check = try ClipArchive(directory: directory)
+        let records = try check.loadRecords()
+        XCTAssertEqual(records.map(\.id), [renewedID])
+        XCTAssertEqual(records.first?.pinned, true, "磁盘上的置顶补写到新行")
+        XCTAssertEqual(try check.loadMemberships().map(\.clip), [renewedID], "磁盘上的归属指向新行")
+        check.close()
+        store.close()
+    }
+
     func testBoardColorCyclesPalette() {
         let store = ClipStore(archive: nil)
         XCTAssertEqual(store.addBoard(name: "一").color, .red)
