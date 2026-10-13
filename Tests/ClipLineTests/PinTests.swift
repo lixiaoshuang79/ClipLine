@@ -112,7 +112,7 @@ final class PinTests: XCTestCase {
         sqlite3_close(db)
 
         let archive = try ClipArchive(directory: directory)
-        XCTAssertEqual(try archive.userVersion(), 2)
+        XCTAssertEqual(try archive.userVersion(), 3)
         let records = try archive.loadRecords()
         XCTAssertEqual(records.count, 1)
         XCTAssertFalse(records[0].pinned)

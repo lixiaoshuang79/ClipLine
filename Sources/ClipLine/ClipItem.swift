@@ -25,6 +25,8 @@ struct ClipItem: Identifiable {
     let searchText: NSString
     /// 置顶：不会被容量淘汰、「清空历史」保留，展示时排在最前（衣夹显示为黄铜色）。
     var pinned: Bool
+    /// 所属标签板：归入标签的条目离开剪贴板历史流转（Paste 语义），不会被淘汰或清空。
+    var boards: Set<UUID> = []
     /// 图片条目的离线 OCR 原文。
     var ocrText: String?
     /// OCR 原文折叠后的检索副本（惰性算一次，随 ocrText 一起设置）。

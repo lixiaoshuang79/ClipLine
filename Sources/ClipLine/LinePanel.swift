@@ -49,6 +49,11 @@ class ClipPanel: NSPanel {
             return
         }
         wantsSearchFocus = false
+        // 顶栏有别的输入框正在编辑（标签新建/重命名）时不抢焦点。
+        if let editor = firstResponder as? NSTextView, editor.isFieldEditor,
+           (editor.delegate as? NSTextField) !== field {
+            return
+        }
         guard field.currentEditor() == nil else { return }
         makeFirstResponder(field)
         if let editor = field.currentEditor() {
@@ -65,6 +70,11 @@ class ClipPanel: NSPanel {
     /// 没有主菜单的 accessory App 收不到编辑快捷键，这里直接转给搜索框的字段编辑器。
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        // ⇧⌘N：新建标签（Paste 的「创建 Pinboard」同款；绳式面板没有标签，无副作用）。
+        if flags == [.command, .shift], event.charactersIgnoringModifiers?.lowercased() == "n" {
+            NotificationCenter.default.post(name: .clipLineCreateBoard, object: nil)
+            return true
+        }
         if flags == .command || flags == [.command, .shift],
            let key = event.charactersIgnoringModifiers?.lowercased() {
             let shift = flags.contains(.shift)

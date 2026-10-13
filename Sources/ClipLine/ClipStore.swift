@@ -30,14 +30,14 @@ final class ClipStore: ObservableObject {
     /// 搜索词被外部改写（清除、调试预填）时递增，通知搜索框同步文字。
     @Published private(set) var fieldRevision = 0
     @Published private(set) var scrollRequest: ScrollRequest?
-    /// 底部面板「实用链接」页签：只展示链接卡。绳式样式应保持 nil。
-    @Published var kindFilter: KindFilter? = nil {
-        didSet { if oldValue != kindFilter { refilter(queryChanged: false) } }
+    /// 当前在看的标签板（nil = 剪贴板历史）。绳式样式不展示标签，应保持 nil。
+    @Published var activeBoardID: UUID? = nil {
+        didSet { if oldValue != activeBoardID { refilter(queryChanged: false) } }
     }
-
-    enum KindFilter: Equatable {
-        case links
-    }
+    /// 用户自建的标签板，按顶栏顺序排列。
+    @Published private(set) var boards: [Pinboard] = []
+    /// 每个板里的条目 id（新固定在前），板视图按它排序。
+    private var boardMembers: [UUID: [UUID]] = [:]
 
     /// 由 AppDelegate 注入：卡片上的动作要走它的收尾逻辑（隐藏面板、合成 ⌘V）。
     var onRequestTuck: (() -> Void)?
@@ -88,9 +88,18 @@ final class ClipStore: ObservableObject {
     func ingest(_ captured: ClipItem) {
         if items.first?.fingerprint == captured.fingerprint { return }
         var item = captured
-        // 重新复制一条已置顶的内容：置顶状态跟着走。
-        if let old = items.first(where: { $0.fingerprint == item.fingerprint }), old.pinned {
-            item.pinned = true
+        // 重新复制一条已置顶或已归入标签的内容：状态跟着新副本走（同指纹旧行会被新行替换）。
+        if let old = items.first(where: { $0.fingerprint == item.fingerprint }) {
+            if old.pinned { item.pinned = true }
+            if !old.boards.isEmpty {
+                item.boards = old.boards
+                for board in old.boards {
+                    if let index = boardMembers[board]?.firstIndex(of: old.id) {
+                        boardMembers[board]?[index] = item.id
+                    }
+                    persist { try $0.addMembership(pinboard: board, clip: item.id) }
+                }
+            }
         }
         // 图片先留一份数据，等落库后跑 OCR（快照随后会被清掉）。
         var ocrCandidate: Data?
@@ -137,14 +146,91 @@ final class ClipStore: ObservableObject {
         refilter(queryChanged: false)   // 置顶排最前，顺序会变
     }
 
-    /// 清空历史（置顶条目保留）。
+    /// 清空历史（置顶条目与已归入标签的条目保留）。
     func clearHistory() {
-        items = items.filter(\.pinned)
+        items = items.filter { $0.pinned || !$0.boards.isEmpty }
+        let kept = Set(items.map(\.id))
+        boardMembers = boardMembers.mapValues { $0.filter(kept.contains) }
         freshIDs = []
         landingIDs = []
         replaceQuery("")
         refilter(queryChanged: false)
         persist { try $0.deleteAll(keepingPinned: true) }
+    }
+
+    // MARK: 标签板（对齐 Paste 的 Pinboard：自建标签 + 条目归类）
+
+    func board(id: UUID?) -> Pinboard? {
+        id.flatMap { wanted in boards.first { $0.id == wanted } }
+    }
+
+    /// 顶栏「+」新建：空名落「未命名」；颜色按 8 色板顺延。新建后切到新板。
+    @discardableResult
+    func addBoard(name: String) -> Pinboard {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let palette = PinboardColor.allCases
+        let board = Pinboard(id: UUID(),
+                             name: trimmed.isEmpty ? "未命名" : trimmed,
+                             color: palette[boards.count % palette.count],
+                             position: (boards.map(\.position).max() ?? -1) + 1)
+        boards.append(board)
+        boardMembers[board.id] = []
+        persist {
+            try $0.insertPinboard(PinboardRecord(id: board.id, name: board.name,
+                                                 color: board.color.rawValue, position: board.position))
+        }
+        activeBoardID = board.id
+        return board
+    }
+
+    func renameBoard(_ id: UUID, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let index = boards.firstIndex(where: { $0.id == id }),
+              boards[index].name != trimmed else { return }
+        boards[index].name = trimmed
+        persist { try $0.renamePinboard(id: id, name: trimmed) }
+    }
+
+    func setBoardColor(_ id: UUID, _ color: PinboardColor) {
+        guard let index = boards.firstIndex(where: { $0.id == id }), boards[index].color != color else { return }
+        boards[index].color = color
+        persist { try $0.setPinboardColor(id: id, color: color.rawValue) }
+    }
+
+    /// 删除标签：只在这个板里的条目随它一起删除（对齐 Paste「删除 Pinboard 及其所有内容将无法恢复」）；
+    /// 同时在别的板里的条目只是少一个归属。
+    func deleteBoard(_ id: UUID) {
+        guard boards.contains(where: { $0.id == id }) else { return }
+        let sole = Set(items.filter { $0.boards == [id] }.map(\.id))
+        var next = items.filter { !sole.contains($0.id) }
+        for index in next.indices { next[index].boards.remove(id) }
+        boards.removeAll { $0.id == id }
+        boardMembers.removeValue(forKey: id)
+        if activeBoardID == id { activeBoardID = nil }
+        commit(next)
+        persist { try $0.deletePinboard(id: id, soleClipIDs: Array(sole)) }
+    }
+
+    /// 把一条归入标签：离开剪贴板历史流转（完整保留在标签里），豁免容量淘汰、清空历史不删。
+    func pin(_ item: ClipItem, to boardID: UUID) {
+        guard let index = items.firstIndex(where: { $0.id == item.id }),
+              boards.contains(where: { $0.id == boardID }),
+              !items[index].boards.contains(boardID) else { return }
+        items[index].boards.insert(boardID)
+        boardMembers[boardID, default: []].removeAll { $0 == item.id }
+        boardMembers[boardID, default: []].insert(item.id, at: 0)
+        persist { try $0.addMembership(pinboard: boardID, clip: item.id) }
+        refilter(queryChanged: false)
+    }
+
+    /// 从某个标签里取出：还留在别的标签里就只是少一个归属，全部取出后回到剪贴板历史。
+    func unpin(_ item: ClipItem, from boardID: UUID) {
+        guard let index = items.firstIndex(where: { $0.id == item.id }),
+              items[index].boards.contains(boardID) else { return }
+        items[index].boards.remove(boardID)
+        boardMembers[boardID]?.removeAll { $0 == item.id }
+        persist { try $0.removeMembership(pinboard: boardID, clip: item.id) }
+        refilter(queryChanged: false)
     }
 
     /// 设置里改了容量：立即按新策略复评（超出的现在淘汰）。
@@ -163,7 +249,8 @@ final class ClipStore: ObservableObject {
     /// 把新的完整列表定下来：执行容量淘汰，被移走的条目同步从磁盘删除。
     private func commit(_ next: [ClipItem]) {
         let evicted = retention.evictions(next.map {
-            Retention.Entry(id: $0.id, bytes: $0.bytes, isImage: $0.isImage, pinned: $0.pinned)
+            Retention.Entry(id: $0.id, bytes: $0.bytes, isImage: $0.isImage,
+                            pinned: $0.pinned, boarded: !$0.boards.isEmpty)
         })
         let kept = evicted.isEmpty ? next : next.filter { !evicted.contains($0.id) }
         let keptIDs = Set(kept.map(\.id))
@@ -199,10 +286,12 @@ final class ClipStore: ObservableObject {
         if let item = selectedItem { onRequestPaste?(item) }
     }
 
-    /// Esc：先清搜索词，没有搜索词时才收起面板。
+    /// Esc：先清搜索词，再看标签页，最后才收起面板。
     func escape() {
         if fieldHasText || !search.raw.isEmpty {
             replaceQuery("")
+        } else if activeBoardID != nil {
+            activeBoardID = nil
         } else {
             onRequestTuck?()
         }
@@ -237,12 +326,17 @@ final class ClipStore: ObservableObject {
 
     /// 重新算绳上挂哪些卡。换了搜索词时选中第一张命中并滚回开头；清掉搜索词时滚到仍选中的那张。
     private func refilter(queryChanged: Bool) {
-        // 置顶的挂在绳的最前面（组内保持既有时序）。
-        let ordered = items.filter(\.pinned) + items.filter { !$0.pinned }
-        var next = search.isEmpty ? ordered : ordered.filter(search.matches)
-        if kindFilter == .links {
-            next = next.filter { if case .link = $0.kind { return true }; return false }
+        let scoped: [ClipItem]
+        if let boardID = activeBoardID, boards.contains(where: { $0.id == boardID }) {
+            // 标签视图：按固定顺序（新固定的在前）。
+            let byID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
+            scoped = (boardMembers[boardID] ?? []).compactMap { byID[$0] }
+        } else {
+            // 剪贴板历史：归入标签的条目不在其中流转；置顶的挂在最前面（组内保持既有时序）。
+            let history = items.filter { $0.boards.isEmpty }
+            scoped = history.filter(\.pinned) + history.filter { !$0.pinned }
         }
+        let next = search.isEmpty ? scoped : scoped.filter(search.matches)
         shown = next
         let selectionVisible = selectedID.map { id in shown.contains { $0.id == id } } ?? false
         if queryChanged, !search.isEmpty {
@@ -354,16 +448,25 @@ final class ClipStore: ObservableObject {
         }
         io.async { [weak self] in
             var records: [ClipRecord] = []
-            do { records = try archive.loadRecords() } catch { Self.log("store: load failed: \(error)") }
+            var boardRecords: [PinboardRecord] = []
+            var memberships: [(pinboard: UUID, clip: UUID, position: Int)] = []
+            do {
+                records = try archive.loadRecords()
+                boardRecords = try archive.loadPinboards()
+                memberships = try archive.loadMemberships()
+            } catch { Self.log("store: load failed: \(error)") }
             var images: [UUID: (thumb: NSImage, pixelSize: CGSize)] = [:]
             for record in records where record.kind == "image" {
                 if let data = record.preview, let image = ClipItem.cardImage(from: data) { images[record.id] = image }
             }
-            DispatchQueue.main.async { self?.adopt(records, images: images) }
+            DispatchQueue.main.async {
+                self?.adopt(records, images: images, boards: boardRecords, memberships: memberships)
+            }
         }
     }
 
-    private func adopt(_ records: [ClipRecord], images: [UUID: (thumb: NSImage, pixelSize: CGSize)]) {
+    private func adopt(_ records: [ClipRecord], images: [UUID: (thumb: NSImage, pixelSize: CGSize)],
+                       boards boardRecords: [PinboardRecord], memberships: [(pinboard: UUID, clip: UUID, position: Int)]) {
         let present = Set(items.map(\.fingerprint))
         var loaded: [ClipItem] = []
         var broken: [UUID] = []
@@ -376,6 +479,21 @@ final class ClipStore: ObservableObject {
             _ = SourceTint.of(item.source)
             loaded.append(item)
         }
+
+        // 标签板与归属：条目从磁盘带回来的标签在内存里补上（它们不参与历史流转）。
+        let boardIDs = Set(boardRecords.map(\.id))
+        boards = boardRecords.map {
+            Pinboard(id: $0.id, name: $0.name, color: PinboardColor(rawValue: $0.color) ?? .gray, position: $0.position)
+        }
+        var byBoard: [UUID: [(id: UUID, position: Int)]] = [:]
+        var byClip: [UUID: Set<UUID>] = [:]
+        for row in memberships where boardIDs.contains(row.pinboard) {
+            byBoard[row.pinboard, default: []].append((row.clip, row.position))
+            byClip[row.clip, default: []].insert(row.pinboard)
+        }
+        boardMembers = byBoard.mapValues { $0.sorted { $0.position > $1.position }.map(\.id) }
+        for index in loaded.indices { loaded[index].boards = byClip[loaded[index].id] ?? [] }
+
         commit(items + loaded)
         if !broken.isEmpty { persist { try $0.delete(ids: broken) } }
         let kept = Set(items.map(\.id))
@@ -462,6 +580,7 @@ final class ClipStore: ObservableObject {
         这是 ClipLine 的演示：复制过的内容会挂在这根绳上。
 
         点卡片 = 复制并粘贴回你刚才的 App；← → 选择，回车粘贴，Esc 或点空白处收起；悬停时点 × 把它摘下来，点右上角图钉把它置顶。
+        顶栏的 + 新建标签；右键卡片「固定到」把条目归进标签，它就不再跟着历史流转。
         """
         let snippet = """
             func reveal() {
@@ -506,6 +625,17 @@ final class ClipStore: ObservableObject {
 
         var demo = seeded.compactMap { $0 }
         if demo.count > 2 { demo[2].pinned = true }   // 一张置顶卡：黄铜衣夹的目测位
+
+        // 演示标签（对齐 Paste 顶栏的「实用链接」）：两条链接卡归进去，历史里不再出现。
+        let demoBoard = Pinboard(id: UUID(), name: "实用链接", color: .red, position: 0)
+        let linkIDs = demo.filter { if case .link = $0.kind { return true }; return false }.map(\.id)
+        if !linkIDs.isEmpty {
+            boards = [demoBoard]
+            boardMembers = [demoBoard.id: linkIDs]
+            for index in demo.indices where linkIDs.contains(demo[index].id) {
+                demo[index].boards = [demoBoard.id]
+            }
+        }
         freshIDs.formUnion(demo.map(\.id))
         landingIDs.formUnion(demo.map(\.id))
         commit(demo + items)

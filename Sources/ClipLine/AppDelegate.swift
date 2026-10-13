@@ -57,7 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         // 换面板样式：先把当前面板收起，下次唤出用新样式。
         styleObserver = settings.$panelStyle.dropFirst().sink { [weak self] _ in
-            self?.store.kindFilter = nil
+            self?.store.activeBoardID = nil
             self?.tuck(immediate: true)
         }
         openSettingsObserver = NotificationCenter.default.addObserver(
@@ -216,8 +216,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func reveal() {
         let front = NSWorkspace.shared.frontmostApplication
         previousApp = (front?.processIdentifier == getpid()) ? nil : front
-        // 绳式不认底部页签过滤；切回绳时清掉，避免只剩链接卡。
-        if settings.effectivePanelStyle != .paste { store.kindFilter = nil }
+        // 绳式不展示标签页；切回绳时回到剪贴板历史。
+        if settings.effectivePanelStyle != .paste { store.activeBoardID = nil }
         let board = activePanel
         board.placeOnScreen()
         if store.selectedItem == nil { store.selectedID = store.shown.first?.id }

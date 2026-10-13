@@ -31,7 +31,7 @@ struct ClipRecord {
 /// 快照按「剪贴板项序号 × 类型」拆行存 BLOB：粘贴时整条取回，图片缩略图只读一种表示。
 /// 不做线程同步：调用方必须串行使用（`ClipStore` 把它关在一条串行队列上）。
 final class ClipArchive {
-    static let schemaVersion: Int32 = 2
+    static let schemaVersion: Int32 = 3
 
     static var defaultDirectory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -130,7 +130,27 @@ final class ClipArchive {
                     """)
             }
         }
-        // 以后的结构变化在这里逐级追加：if version < 3 { … PRAGMA user_version = 3 }
+        if version < 3 {
+            try transaction {
+                try exec("""
+                    CREATE TABLE pinboards (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        name TEXT NOT NULL,
+                        color TEXT NOT NULL,
+                        position INTEGER NOT NULL,
+                        created_at REAL NOT NULL
+                    );
+                    CREATE TABLE pinboard_items (
+                        pinboard_id TEXT NOT NULL REFERENCES pinboards(id) ON DELETE CASCADE,
+                        clip_id TEXT NOT NULL REFERENCES clips(id) ON DELETE CASCADE,
+                        position INTEGER NOT NULL,
+                        PRIMARY KEY (pinboard_id, clip_id)
+                    );
+                    PRAGMA user_version = 3;
+                    """)
+            }
+        }
+        // 以后的结构变化在这里逐级追加：if version < 4 { … PRAGMA user_version = 4 }
     }
 
     // MARK: 增删
@@ -185,12 +205,13 @@ final class ClipArchive {
         try run("UPDATE clips SET ocr_text = ? WHERE id = ?", [.text(text), .text(id.uuidString)])
     }
 
-    /// 清空历史：默认全清；`keepingPinned` 时保留置顶条目。旧内容不留在磁盘上。
+    /// 清空历史：默认全清；`keepingPinned` 时保留置顶条目与已归入标签的条目（对齐 Paste「已固定的项目和 Pinboards 不会被删除」）。
     func deleteAll(keepingPinned: Bool = false) throws {
         try transaction {
             if keepingPinned {
-                try run("DELETE FROM representations WHERE clip_id IN (SELECT id FROM clips WHERE pinned = 0)")
-                try run("DELETE FROM clips WHERE pinned = 0")
+                let doomed = "SELECT id FROM clips WHERE pinned = 0 AND id NOT IN (SELECT clip_id FROM pinboard_items)"
+                try run("DELETE FROM representations WHERE clip_id IN (\(doomed))")
+                try run("DELETE FROM clips WHERE id IN (\(doomed))")
             } else {
                 try run("DELETE FROM representations")
                 try run("DELETE FROM clips")
@@ -198,6 +219,79 @@ final class ClipArchive {
         }
         try exec("PRAGMA incremental_vacuum")
         try exec("PRAGMA wal_checkpoint(TRUNCATE)")
+    }
+
+    // MARK: 标签板
+
+    func loadPinboards() throws -> [PinboardRecord] {
+        let stmt = try prepare("SELECT id, name, color, position FROM pinboards ORDER BY position")
+        defer { sqlite3_finalize(stmt) }
+        var records: [PinboardRecord] = []
+        var rc = sqlite3_step(stmt)
+        while rc == SQLITE_ROW {
+            if let id = text(stmt, 0).flatMap(UUID.init(uuidString:)) {
+                records.append(PinboardRecord(id: id, name: text(stmt, 1) ?? "",
+                                              color: text(stmt, 2) ?? "gray",
+                                              position: Int(sqlite3_column_int64(stmt, 3))))
+            }
+            rc = sqlite3_step(stmt)
+        }
+        guard rc == SQLITE_DONE else { throw failure() }
+        return records
+    }
+
+    func insertPinboard(_ record: PinboardRecord) throws {
+        try run("""
+            INSERT INTO pinboards (id, name, color, position, created_at) VALUES (?, ?, ?, ?, ?)
+            """, [.text(record.id.uuidString), .text(record.name), .text(record.color),
+                  .int(record.position), .real(Date().timeIntervalSince1970)])
+    }
+
+    func renamePinboard(id: UUID, name: String) throws {
+        try run("UPDATE pinboards SET name = ? WHERE id = ?", [.text(name), .text(id.uuidString)])
+    }
+
+    func setPinboardColor(id: UUID, color: String) throws {
+        try run("UPDATE pinboards SET color = ? WHERE id = ?", [.text(color), .text(id.uuidString)])
+    }
+
+    /// 删除标签；`soleClipIDs` 是只属于这一个标签的条目，随标签一起删除（快照一并清掉）。
+    func deletePinboard(id: UUID, soleClipIDs: [UUID]) throws {
+        try transaction {
+            for clipID in soleClipIDs { try run("DELETE FROM clips WHERE id = ?", [.text(clipID.uuidString)]) }
+            try run("DELETE FROM pinboards WHERE id = ?", [.text(id.uuidString)])
+        }
+        try exec("PRAGMA incremental_vacuum")
+    }
+
+    /// 某条归入某标签（已在其中则不动），position 取当前最大值 +1（新的排前）。
+    func addMembership(pinboard: UUID, clip: UUID) throws {
+        try run("""
+            INSERT OR IGNORE INTO pinboard_items (pinboard_id, clip_id, position)
+            VALUES (?, ?, COALESCE((SELECT MAX(position) FROM pinboard_items WHERE pinboard_id = ?), 0) + 1)
+            """, [.text(pinboard.uuidString), .text(clip.uuidString), .text(pinboard.uuidString)])
+    }
+
+    func removeMembership(pinboard: UUID, clip: UUID) throws {
+        try run("DELETE FROM pinboard_items WHERE pinboard_id = ? AND clip_id = ?",
+                [.text(pinboard.uuidString), .text(clip.uuidString)])
+    }
+
+    /// 全部归属关系：条目 id → [(标签 id, 板内序号)]；序号新的在后，供展示时反序。
+    func loadMemberships() throws -> [(pinboard: UUID, clip: UUID, position: Int)] {
+        let stmt = try prepare("SELECT pinboard_id, clip_id, position FROM pinboard_items")
+        defer { sqlite3_finalize(stmt) }
+        var rows: [(UUID, UUID, Int)] = []
+        var rc = sqlite3_step(stmt)
+        while rc == SQLITE_ROW {
+            if let board = text(stmt, 0).flatMap(UUID.init(uuidString:)),
+               let clip = text(stmt, 1).flatMap(UUID.init(uuidString:)) {
+                rows.append((board, clip, Int(sqlite3_column_int64(stmt, 2))))
+            }
+            rc = sqlite3_step(stmt)
+        }
+        guard rc == SQLITE_DONE else { throw failure() }
+        return rows.map { (pinboard: $0.0, clip: $0.1, position: $0.2) }
     }
 
     // MARK: 读取

@@ -80,6 +80,25 @@ final class PanelProbe {
             await sleep(0.3)
             note("Esc 清词: \(store.query.isEmpty ? "OK" : "FAIL")（query=\"\(store.query)\"）")
 
+            // 6) 标签视图（Paste 式）：切到演示标签 → 板内是归类过的条目；Esc 先回历史、再收起。
+            if isBottom, let demoBoard = store.boards.first {
+                store.activeBoardID = demoBoard.id   // 与点标签页等价（右键菜单是 NSMenu，不适合合成）
+                await sleep(0.3)
+                let members = store.shown.map(\.id)
+                let allBoarded = members.allSatisfy { id in
+                    store.items.first { $0.id == id }?.boards.isEmpty == false
+                }
+                note("标签视图: \(members.count == 2 && allBoarded ? "OK" : "FAIL")（\(members.count) 条，期望 2）")
+                postKey(53, to: panel())   // esc：标签 → 剪贴板历史
+                await sleep(0.3)
+                note("Esc 回历史: \(store.activeBoardID == nil ? "OK" : "FAIL")")
+                postKey(53, to: panel())   // esc：历史 → 收起
+                await sleep(0.4)
+                note("Esc 收起: \(store.revealed ? "FAIL（没收起）" : "OK")")
+            } else {
+                note("标签视图: SKIP（绳式或没有标签）")
+            }
+
             finish()
         }
     }

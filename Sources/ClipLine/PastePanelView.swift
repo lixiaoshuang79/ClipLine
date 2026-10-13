@@ -30,13 +30,13 @@ struct PastePanelView: View {
 
     private static let startAnchor = "paste.row.start"
 
-    /// 顶栏主分区：剪贴板历史 / 实用链接（经 store.kindFilter 只露链接卡）。
-    private enum Tab: Hashable { case history, links }
-
     @Environment(\.colorScheme) private var scheme
     @State private var dropTargeted = false
-    @State private var tab: Tab = .history
     @State private var searchExpanded = false
+    /// 「+」新建标签时的行内输入（对齐 Paste：顶栏出现「未命名」输入框，回车落定）。
+    @State private var creatingBoard = false
+    /// 正在行内改名的标签。
+    @State private var renamingBoard: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -48,7 +48,7 @@ struct PastePanelView: View {
                     LazyHStack(alignment: .top, spacing: Self.cardSpacing) {
                         Color.clear.frame(width: 1, height: 1).id(Self.startAnchor)
                         ForEach(store.shown) { item in
-                            PasteCardView(item: item, store: store)
+                            PasteCardView(item: item, store: store, onCreateBoard: createBoardAndPin)
                         }
                     }
                     .padding(.horizontal, Self.rowPadding)
@@ -74,7 +74,7 @@ struct PastePanelView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .overlay(alignment: .top) {
             if store.shown.isEmpty {
-                Hint(text: emptyHint, detail: store.items.isEmpty ? nil : "Esc 清除")
+                Hint(text: emptyHint, detail: emptyHintDetail)
                     .padding(.top, 96)
                     .transition(.opacity)
             }
@@ -108,14 +108,14 @@ struct PastePanelView: View {
             }
         }
         .animation(.easeOut(duration: 0.15), value: dropTargeted)
-        .animation(.easeOut(duration: 0.15), value: tab)
+        .animation(.easeOut(duration: 0.15), value: store.activeBoardID)
+        .animation(.easeOut(duration: 0.15), value: store.boards.map(\.id))
         // 出现动画：0.15s cubic-bezier(0.2, 0.8, 0.2, 1.0)（REA / 实拍）。
         .offset(y: store.revealed ? 0 : Self.panelHeight + 14)
         .animation(.timingCurve(0.2, 0.8, 0.2, 1.0, duration: 0.15), value: store.revealed)
         .environment(\.searchQuery, store.search)
-        .onAppear {
-            // 宿主视图常驻：每次面板用到底部样式时与页签对齐。
-            store.kindFilter = tab == .links ? .links : nil
+        .onReceive(NotificationCenter.default.publisher(for: .clipLineCreateBoard)) { _ in
+            creatingBoard = true   // ⇧⌘N：与 Paste 的「创建 Pinboard」对齐
         }
         .onChange(of: store.fieldHasText) { _, typing in
             withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
@@ -125,24 +125,42 @@ struct PastePanelView: View {
     }
 
     private var emptyHint: String {
-        if store.items.isEmpty { return "复制点什么，它就会出现在这里" }
-        if tab == .links {
-            return store.search.isEmpty ? "还没有链接，复制一个网址再来"
-                : "没有匹配「\(Self.excerpt(store.query))」的链接"
+        if let board = store.board(id: store.activeBoardID) {
+            return store.search.isEmpty ? "「\(board.name)」还是空的"
+                : "「\(board.name)」里没有匹配「\(Self.excerpt(store.query))」的"
         }
+        if store.items.isEmpty { return "复制点什么，它就会出现在这里" }
         return "没有匹配「\(Self.excerpt(store.query))」"
+    }
+
+    private var emptyHintDetail: String? {
+        if let board = store.board(id: store.activeBoardID) {
+            return store.search.isEmpty ? "去剪贴板历史里右键卡片，固定到「\(board.name)」" : "Esc 清除"
+        }
+        return store.items.isEmpty ? nil : "Esc 清除"
     }
 
     // MARK: 顶栏（对照 paste-header 实拍）
 
-    /// 居中：搜索 · 剪贴板历史药丸 · 实用链接红点 · ⊕；右侧 … 溢出菜单。
+    /// 居中：搜索 · 剪贴板历史药丸 · 各标签（色点 + 名字）· 新建 ⊕；右侧 … 溢出菜单。
     private var toolbar: some View {
         HStack(spacing: 0) {
             Spacer(minLength: 12)
             HStack(spacing: 14) {
                 searchCluster
                 historyTab
-                linksTab
+                ForEach(store.boards) { board in
+                    boardTab(board)
+                }
+                if creatingBoard {
+                    InlineTextField(initial: "未命名",
+                                    onCommit: { name in
+                                        creatingBoard = false
+                                        store.addBoard(name: name)
+                                    },
+                                    onCancel: { creatingBoard = false })
+                        .frame(width: 110, height: 20)
+                }
                 plusButton
             }
             Spacer(minLength: 12)
@@ -179,9 +197,9 @@ struct PastePanelView: View {
     }
 
     private var historyTab: some View {
-        Button {
-            withAnimation(.easeOut(duration: 0.15)) { tab = .history }
-            store.kindFilter = nil
+        let selected = store.activeBoardID == nil
+        return Button {
+            store.activeBoardID = nil
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: "clock.arrow.circlepath")
@@ -191,32 +209,64 @@ struct PastePanelView: View {
             }
             .padding(.horizontal, 11)
             .padding(.vertical, 5)
-            .background(Capsule(style: .continuous).fill(tab == .history ? pillFill : Color.clear))
+            .background(Capsule(style: .continuous).fill(selected ? pillFill : Color.clear))
             .foregroundStyle(scheme == .dark ? Color.white.opacity(0.92) : Color.primary.opacity(0.88))
+            .contentShape(Capsule(style: .continuous))
         }
         .buttonStyle(.plain)
         .help("全部剪贴板历史")
     }
 
-    private var linksTab: some View {
-        Button {
-            withAnimation(.easeOut(duration: 0.15)) { tab = .links }
-            store.kindFilter = .links
-        } label: {
+    /// 一个标签页：色点 + 名字；右键 = 重命名 / 颜色 / 删除（对齐 Paste 标签右键菜单）。
+    @ViewBuilder
+    private func boardTab(_ board: Pinboard) -> some View {
+        let selected = store.activeBoardID == board.id
+        if renamingBoard == board.id {
             HStack(spacing: 6) {
-                Circle()
-                    .fill(Color(.sRGB, red: 235 / 255, green: 76 / 255, blue: 70 / 255))
-                    .frame(width: 8, height: 8)
-                Text("实用链接")
-                    .font(.system(size: 13, weight: .medium))
+                Circle().fill(board.color.color).frame(width: 8, height: 8)
+                InlineTextField(initial: board.name,
+                                onCommit: { name in
+                                    renamingBoard = nil
+                                    store.renameBoard(board.id, to: name)
+                                },
+                                onCancel: { renamingBoard = nil })
+                    .frame(width: 96, height: 20)
             }
-            .padding(.horizontal, tab == .links ? 11 : 2)
-            .padding(.vertical, 5)
-            .background(Capsule(style: .continuous).fill(tab == .links ? pillFill : Color.clear))
-            .foregroundStyle(scheme == .dark ? Color.white.opacity(0.92) : Color.primary.opacity(0.88))
+        } else {
+            Button {
+                store.activeBoardID = board.id
+            } label: {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(board.color.color)
+                        .frame(width: 8, height: 8)
+                    Text(board.name)
+                        .font(.system(size: 13, weight: .medium))
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, selected ? 11 : 2)
+                .padding(.vertical, 5)
+                .background(Capsule(style: .continuous).fill(selected ? pillFill : Color.clear))
+                .foregroundStyle(scheme == .dark ? Color.white.opacity(0.92) : Color.primary.opacity(0.88))
+                .contentShape(Capsule(style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .help("标签「\(board.name)」")
+            .contextMenu {
+                Button("重命名") { renamingBoard = board.id }
+                Menu("颜色") {
+                    ForEach(PinboardColor.allCases, id: \.self) { color in
+                        Button {
+                            store.setBoardColor(board.id, color)
+                        } label: {
+                            Text(color == board.color ? "✓ \(color.displayName)" : color.displayName)
+                        }
+                    }
+                }
+                Divider()
+                Button("删除标签…", role: .destructive) { confirmDelete(board) }
+            }
         }
-        .buttonStyle(.plain)
-        .help("只看链接")
     }
 
     /// 药丸底色：实拍浅灰 ≈ RGB(222,224,225)；非 REA 报告里的紫调。
@@ -227,7 +277,7 @@ struct PastePanelView: View {
     }
 
     private var plusButton: some View {
-        Button(action: addFiles) {
+        Button { creatingBoard = true } label: {
             Image(systemName: "plus")
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(scheme == .dark ? Color.white.opacity(0.85) : Color.primary.opacity(0.75))
@@ -235,19 +285,37 @@ struct PastePanelView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("添加文件到历史")
+        .help("新建标签（⇧⌘N）")
+    }
+
+    /// 删除标签前的确认（对齐 Paste：标签及其内容删除后无法恢复）。
+    private func confirmDelete(_ board: Pinboard) {
+        NSApp.activate()
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "删除「\(board.name)」？"
+        alert.informativeText = "只在这个标签里的条目会一起删除，无法恢复；同时属于其他标签的条目会保留。"
+        alert.addButton(withTitle: "删除")
+        alert.addButton(withTitle: "取消")
+        alert.buttons.first?.hasDestructiveAction = true
+        if alert.runModal() == .alertFirstButtonReturn { store.deleteBoard(board.id) }
+    }
+
+    /// 卡片右键「创建标签…」：建一个未命名标签、把这张卡固定进去，并就地开始改名。
+    private func createBoardAndPin(_ item: ClipItem) {
+        let board = store.addBoard(name: "未命名")
+        store.pin(item, to: board.id)
+        creatingBoard = false
+        renamingBoard = board.id
     }
 
     private var overflowMenu: some View {
         Menu {
+            Button("新建标签") { creatingBoard = true }
+            Button("添加文件到历史…") { addFiles() }
+            Divider()
             Button("设置…") {
                 NotificationCenter.default.post(name: .clipLineOpenSettings, object: nil)
-            }
-            Divider()
-            Button(tab == .history ? "切换到实用链接" : "切换到剪贴板历史") {
-                let next: Tab = tab == .history ? .links : .history
-                withAnimation(.easeOut(duration: 0.15)) { tab = next }
-                store.kindFilter = next == .links ? .links : nil
             }
         } label: {
             Image(systemName: "ellipsis")
@@ -283,6 +351,8 @@ struct PastePanelView: View {
 
 extension Notification.Name {
     static let clipLineOpenSettings = Notification.Name("ClipLine.openSettings")
+    /// ⇧⌘N：新建标签（Paste 的「创建 Pinboard」同款快捷键）。
+    static let clipLineCreateBoard = Notification.Name("ClipLine.createBoard")
 }
 
 // MARK: - Card
@@ -291,6 +361,8 @@ extension Notification.Name {
 private struct PasteCardView: View {
     let item: ClipItem
     let store: ClipStore
+    /// 右键「固定到 ▸ 创建标签…」：由面板建标签并接线改名。
+    let onCreateBoard: (ClipItem) -> Void
 
     @Environment(\.colorScheme) private var scheme
     @State private var hovering = false
@@ -350,7 +422,38 @@ private struct PasteCardView: View {
         }
         .onHover { hovering = $0 }
         .onTapGesture { store.onRequestPaste?(item) }
+        .contextMenu { cardMenu }
         .id(item.id)
+    }
+
+    /// 卡片右键菜单（对齐 Paste：粘贴/复制/固定到 ▸ …；下方是置顶与移除）。
+    @ViewBuilder
+    private var cardMenu: some View {
+        Button("粘贴") { store.onRequestPaste?(item) }
+        Button("复制") { _ = store.writeToPasteboard(item) }
+        Divider()
+        Button(item.pinned ? "取消置顶" : "置顶") { store.togglePin(item) }
+        Menu("固定到") {
+            ForEach(store.boards) { board in
+                Button {
+                    if item.boards.contains(board.id) {
+                        store.unpin(item, from: board.id)
+                    } else {
+                        store.pin(item, to: board.id)
+                    }
+                } label: {
+                    Text(item.boards.contains(board.id) ? "✓ \(board.name)" : board.name)
+                }
+            }
+            if !store.boards.isEmpty { Divider() }
+            Button("创建标签…") { onCreateBoard(item) }
+        }
+        if let activeID = store.activeBoardID, item.boards.contains(activeID),
+           let board = store.board(id: activeID) {
+            Button("从「\(board.name)」移出") { store.unpin(item, from: activeID) }
+        }
+        Divider()
+        Button("移除", role: .destructive) { store.remove(item) }
     }
 
     private func header(_ palette: CardPalette) -> some View {
@@ -617,5 +720,75 @@ private struct Hint: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(.regularMaterial, in: Capsule())
+    }
+}
+
+/// 顶栏行内输入框（新建/重命名标签）：出现即聚焦并全选，回车落定，Esc 取消，失焦也落定。
+private struct InlineTextField: NSViewRepresentable {
+    let initial: String
+    let onCommit: (String) -> Void
+    let onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onCommit: onCommit, onCancel: onCancel) }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField(string: initial)
+        field.isBordered = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.font = .systemFont(ofSize: 13, weight: .medium)
+        field.usesSingleLineMode = true
+        field.lineBreakMode = .byClipping
+        field.cell?.isScrollable = true
+        field.delegate = context.coordinator
+        DispatchQueue.main.async {
+            field.window?.makeFirstResponder(field)
+            field.currentEditor()?.selectAll(nil)
+        }
+        return field
+    }
+
+    func updateNSView(_ view: NSTextField, context: Context) {}
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        private let onCommit: (String) -> Void
+        private let onCancel: () -> Void
+        /// 回车与失焦都会到；只认第一个。
+        private var settled = false
+
+        init(onCommit: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
+            self.onCommit = onCommit
+            self.onCancel = onCancel
+        }
+
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            switch selector {
+            case #selector(NSResponder.insertNewline(_:)):
+                settle(control.stringValue)
+                return true
+            case #selector(NSResponder.cancelOperation(_:)):
+                cancel()
+                return true
+            default:
+                return false
+            }
+        }
+
+        func controlTextDidEndEditing(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else { return }
+            settle(field.stringValue)
+        }
+
+        private func settle(_ text: String) {
+            guard !settled else { return }
+            settled = true
+            onCommit(text)
+        }
+
+        private func cancel() {
+            guard !settled else { return }
+            settled = true
+            onCancel()
+        }
     }
 }
