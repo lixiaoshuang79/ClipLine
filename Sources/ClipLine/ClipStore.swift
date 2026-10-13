@@ -32,7 +32,13 @@ final class ClipStore: ObservableObject {
     @Published private(set) var scrollRequest: ScrollRequest?
     /// 当前在看的标签板（nil = 剪贴板历史）。绳式样式不展示标签，应保持 nil。
     @Published var activeBoardID: UUID? = nil {
-        didSet { if oldValue != activeBoardID { refilter(queryChanged: false) } }
+        didSet {
+            guard oldValue != activeBoardID else { return }
+            refilter(queryChanged: false)
+            // 换页从头看：不然停在上一页的滚动位置，选中的第一张可能在视口外。
+            selectedID = shown.first?.id
+            requestScroll(.start)
+        }
     }
     /// 用户自建的标签板，按顶栏顺序排列。
     @Published private(set) var boards: [Pinboard] = []

@@ -193,6 +193,28 @@ final class PinboardTests: XCTestCase {
         XCTAssertEqual(store.shown.map(\.fingerprint), ["t:乙", "t:甲"], "回到剪贴板历史")
     }
 
+    func testSwitchingBoardStartsFromFirstCard() {
+        // 回归：换标签页只重新过滤、不滚动，停在上一页的滚动位置，选中的第一张可能在视口外。
+        let store = ClipStore(archive: nil)
+        for index in 0..<5 { store.ingest(Self.textItem("条目\(index)", at: TimeInterval(index))) }
+        let board = store.addBoard(name: "B")
+        store.pin(store.items[3], to: board.id)
+        store.pin(store.items[4], to: board.id)
+        store.activeBoardID = nil
+        store.select(offset: 2)   // 历史里往右翻了几张
+        let serial = store.scrollRequest?.serial
+
+        store.activeBoardID = board.id
+        XCTAssertEqual(store.selectedID, store.shown.first?.id, "选中标签里的第一张")
+        XCTAssertEqual(store.scrollRequest?.target, .start, "滚回开头")
+        XCTAssertNotEqual(store.scrollRequest?.serial, serial)
+
+        store.select(offset: 1)
+        store.activeBoardID = nil
+        XCTAssertEqual(store.selectedID, store.shown.first?.id, "回到历史同样从头看")
+        XCTAssertEqual(store.scrollRequest?.target, .start)
+    }
+
     func testBoardViewOrdersNewestPinFirst() {
         let store = ClipStore(archive: nil)
         store.ingest(Self.textItem("甲", at: 1))
