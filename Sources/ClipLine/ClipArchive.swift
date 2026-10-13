@@ -328,19 +328,22 @@ final class ClipArchive {
         }
         guard rc == SQLITE_DONE else { throw failure() }
 
-        let preview = try prepare("SELECT data FROM representations WHERE clip_id = ? AND item_index = 0 AND type = ?")
-        defer { sqlite3_finalize(preview) }
         for index in records.indices where records[index].kind == "image" {
-            for type in previewTypes {
-                sqlite3_reset(preview)
-                try bind(preview, [.text(records[index].id.uuidString), .text(type.rawValue)])
-                if sqlite3_step(preview) == SQLITE_ROW {
-                    records[index].preview = blob(preview, 0)
-                    break
-                }
-            }
+            records[index].preview = try preview(id: records[index].id, types: previewTypes)
         }
         return records
+    }
+
+    /// 某条第一项里 `types` 中最先找到的一份数据（图片条目重建缩略图用）。
+    func preview(id: UUID, types: [NSPasteboard.PasteboardType] = [.png, .tiff]) throws -> Data? {
+        let stmt = try prepare("SELECT data FROM representations WHERE clip_id = ? AND item_index = 0 AND type = ?")
+        defer { sqlite3_finalize(stmt) }
+        for type in types {
+            sqlite3_reset(stmt)
+            try bind(stmt, [.text(id.uuidString), .text(type.rawValue)])
+            if sqlite3_step(stmt) == SQLITE_ROW { return blob(stmt, 0) }
+        }
+        return nil
     }
 
     /// 某条的完整快照；条目不存在时为 nil。

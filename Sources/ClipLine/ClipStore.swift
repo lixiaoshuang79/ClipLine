@@ -478,15 +478,21 @@ final class ClipStore: ObservableObject {
             var records: [ClipRecord] = []
             var boardRecords: [PinboardRecord] = []
             var memberships: [(pinboard: UUID, clip: UUID, position: Int)] = []
+            var images: [UUID: (thumb: NSImage, pixelSize: CGSize)] = [:]
             do {
-                records = try archive.loadRecords()
+                // 原图逐张读、解完缩略图就放掉：一次读齐的话启动峰值内存约等于整个图片预算。
+                // 只有还没跑过 OCR 的留着原图，等 adopt 排进识别队列。
+                records = try archive.loadRecords(previewTypes: [])
+                for index in records.indices where records[index].kind == "image" {
+                    try autoreleasepool {
+                        guard let data = try archive.preview(id: records[index].id) else { return }
+                        if let image = ClipItem.cardImage(from: data) { images[records[index].id] = image }
+                        if records[index].ocrText == nil { records[index].preview = data }
+                    }
+                }
                 boardRecords = try archive.loadPinboards()
                 memberships = try archive.loadMemberships()
             } catch { Self.log("store: load failed: \(error)") }
-            var images: [UUID: (thumb: NSImage, pixelSize: CGSize)] = [:]
-            for record in records where record.kind == "image" {
-                if let data = record.preview, let image = ClipItem.cardImage(from: data) { images[record.id] = image }
-            }
             DispatchQueue.main.async {
                 self?.adopt(records, images: images, boards: boardRecords, memberships: memberships)
             }

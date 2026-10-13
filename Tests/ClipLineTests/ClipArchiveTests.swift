@@ -199,6 +199,41 @@ final class ClipArchiveTests: XCTestCase {
         store.close()
     }
 
+    func testLoadArchiveRebuildsThumbnailsAndQueuesOnlyMissingOcr() throws {
+        // 启动读库改为逐张读原图：缩略图照样重建，只有没跑过 OCR 的图拿着原图去补跑。
+        let archive = try ClipArchive(directory: directory)
+        let donePNG = Self.png(width: 8, height: 8)
+        let pendingPNG = Self.png(width: 12, height: 6)
+        let done = try XCTUnwrap(ClipItem.make(snapshot: [[.png: donePNG]], source: .unknown))
+        let pending = try XCTUnwrap(ClipItem.make(snapshot: [[.png: pendingPNG]], source: .unknown))
+        try archive.insert(XCTUnwrap(done.record))
+        try archive.insert(XCTUnwrap(pending.record))
+        try archive.setOcr(id: done.id, text: "")   // 识别过、没有文字
+
+        let store = ClipStore(archive: archive)
+        let lock = NSLock()
+        var recognized: [Data] = []
+        let ocrRan = expectation(description: "补跑 OCR")
+        store.recognizeImage = { data in
+            lock.withLock { recognized.append(data) }
+            ocrRan.fulfill()
+            return nil
+        }
+        store.loadArchive()
+        let deadline = Date().addingTimeInterval(5)
+        while store.items.count < 2, Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+
+        XCTAssertEqual(Set(store.items.map(\.id)), [done.id, pending.id])
+        for item in store.items {
+            guard case .image(_, let size) = item.kind else { return XCTFail("缩略图没有重建") }
+            XCTAssertGreaterThan(size.width, 0)
+        }
+        wait(for: [ocrRan], timeout: 2)
+        Thread.sleep(forTimeInterval: 0.1)   // 若还排着别的识别，这段时间里也该跑到了
+        XCTAssertEqual(lock.withLock { recognized }, [pendingPNG], "只给没跑过 OCR 的图补跑")
+        store.close()
+    }
+
     func testClosedArchiveRejectsLateWrites() throws {
         let archive = try ClipArchive(directory: directory)
         archive.close()
