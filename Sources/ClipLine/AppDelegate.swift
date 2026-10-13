@@ -78,6 +78,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 调试：CLIPLINE_QUERY=<文字> 预填搜索词，便于不打字就目测搜索态。
         if let query = env["CLIPLINE_QUERY"], !query.isEmpty { store.replaceQuery(query) }
         if env["CLIPLINE_DEMO"] == "1" || env["CLIPLINE_SHOW"] == "1" { reveal() }
+        // 调试：CLIPLINE_PANEL_PROBE=1（配 CLIPLINE_DEMO=1）跑一次面板交互回归，见 PanelProbe。
+        if env["CLIPLINE_PANEL_PROBE"] == "1" {
+            PanelProbe(store: store,
+                       reveal: { [weak self] in self?.reveal() },
+                       panel: { [weak self] in self?.activePanel }).run()
+        }
         // 调试：CLIPLINE_SETTINGS=1 直接开设置窗口（截图/自查用）。
         if env["CLIPLINE_SETTINGS"] == "1" { openSettings() }
         // 调试：CLIPLINE_OCR_RUN_DEBUG=preflight 静默体检屏幕录制/辅助功能权限（不弹任何窗），

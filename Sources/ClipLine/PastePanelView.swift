@@ -69,6 +69,9 @@ struct PastePanelView: View {
             ZStack {
                 PanelGlass()
                 if scheme == .dark { Rectangle().fill(.black.opacity(0.25)) }
+                // 点空白收起：垫在最底层的兄弟层（与绳式同款做法）。
+                // 不要把 tuck 手势挂在容器上——它会和卡片的点击手势抢事件，吞掉"点卡粘贴"。
+                Color.clear.contentShape(Rectangle()).onTapGesture { store.onRequestTuck?() }
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
@@ -76,8 +79,6 @@ struct PastePanelView: View {
             RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
                 .strokeBorder(.black.opacity(scheme == .dark ? 0.45 : 0.07), lineWidth: 0.5)
         }
-        .contentShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
-        .onTapGesture { store.onRequestTuck?() }        // 点面板空白收起
         .onDrop(of: [.fileURL, .url, .image, .text], isTargeted: $dropTargeted) { providers in
             store.acceptDrop(providers)
             return true
