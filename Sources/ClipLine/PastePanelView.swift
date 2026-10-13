@@ -327,6 +327,9 @@ struct PastePanelView: View {
     }
 
     private func addFiles() {
+        // 先收起：面板在 Dock 层之上，会盖住打开面板底部的按钮；同确认框一样先激活再弹。
+        store.onRequestTuck?()
+        NSApp.activate()
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
@@ -337,7 +340,7 @@ struct PastePanelView: View {
         let providers = panel.urls.map { url -> NSItemProvider in
             NSItemProvider(contentsOf: url) ?? NSItemProvider()
         }.filter { !$0.registeredTypeIdentifiers.isEmpty }
-        if !providers.isEmpty { _ = store.acceptDrop(providers) }
+        if !providers.isEmpty { store.acceptDrop(providers) }
     }
 
     private static func excerpt(_ query: String) -> String {

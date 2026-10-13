@@ -348,6 +348,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openSettings() {
+        // 面板浮在普通窗口之上（底部样式在 Dock 层之上），不收起会压住居中的设置窗口。
+        tuck(immediate: true)
         settingsWindow.show(settings: settings) { [weak self] target, spec in
             self?.applyHotKey(target, spec) ?? false
         }
