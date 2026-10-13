@@ -155,7 +155,8 @@ final class ClipArchive {
 
     // MARK: 增删
 
-    /// 写入一条（同指纹的旧条目在同一事务里删掉）。含敏感类型的快照一律拒绝。
+    /// 写入一条（同指纹的旧条目在同一事务里删掉，它在各标签里的归属连同板内顺序转给新行）。
+    /// 含敏感类型的快照一律拒绝。
     func insert(_ record: ClipRecord) throws {
         guard let snapshot = record.snapshot else { throw Failure(description: "record has no snapshot") }
         guard !ClipItem.isSensitive(snapshot.flatMap(\.keys)) else {
@@ -163,6 +164,20 @@ final class ClipArchive {
         }
         let id = record.id.uuidString
         try transaction {
+            var carried: [(pinboard: String, position: Int)] = []
+            let held = try prepare("""
+                SELECT pinboard_id, position FROM pinboard_items
+                WHERE clip_id IN (SELECT id FROM clips WHERE id = ? OR fingerprint = ?)
+                """)
+            defer { sqlite3_finalize(held) }
+            try bind(held, [.text(id), .text(record.fingerprint)])
+            var rc = sqlite3_step(held)
+            while rc == SQLITE_ROW {
+                if let board = text(held, 0) { carried.append((board, Int(sqlite3_column_int64(held, 1)))) }
+                rc = sqlite3_step(held)
+            }
+            guard rc == SQLITE_DONE else { throw failure() }
+
             try run("DELETE FROM clips WHERE id = ? OR fingerprint = ?", [.text(id), .text(record.fingerprint)])
             try run("""
                 INSERT INTO clips (id, fingerprint, kind, payload, title, copied_at,
@@ -183,6 +198,10 @@ final class ClipArchive {
                     try bind(stmt, [.text(id), .int(index), .text(type.rawValue), .blob(data)])
                     guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure() }
                 }
+            }
+            for row in carried {
+                try run("INSERT OR IGNORE INTO pinboard_items (pinboard_id, clip_id, position) VALUES (?, ?, ?)",
+                        [.text(row.pinboard), .text(id), .int(row.position)])
             }
         }
     }

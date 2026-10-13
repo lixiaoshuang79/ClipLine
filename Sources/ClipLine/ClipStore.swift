@@ -127,7 +127,8 @@ final class ClipStore: ObservableObject {
                     DispatchQueue.main.async { self.keepInMemory(record) }
                     return
                 }
-                // 归属重挂必须排在转存之后：insert 会先删同指纹旧行（级联清掉旧归属），新行落库后归属才有处可挂。
+                // 归属重挂必须排在转存之后（新行落库后才有处可挂）。旧行在磁盘上时 insert 已把归属连同板内
+                // 顺序转给新行，这里的 INSERT OR IGNORE 是兜底：旧行只在内存里（没落过盘）的情况。
                 for board in carriedBoards {
                     do { try archive.addMembership(pinboard: board, clip: record.id) } catch {
                         Self.log("store: board membership restore failed: \(error)")
@@ -504,8 +505,9 @@ final class ClipStore: ObservableObject {
         let present = Dictionary(items.map { ($0.fingerprint, $0.id) }, uniquingKeysWith: { first, _ in first })
         var loaded: [ClipItem] = []
         var broken: [UUID] = []
-        // 加载期间又复制了一遍的旧条目：磁盘旧行 id → 内存里的新副本 id。新副本转存时会顶掉旧行
-        // （级联清掉归属），所以旧行的置顶与标签要挂到新副本上并重新落盘（同 `ingest` 的重新复制）。
+        // 加载期间又复制了一遍的旧条目：磁盘旧行 id → 内存里的新副本 id。新副本转存时顶掉旧行：
+        // 归属由 insert 转给新行，置顶却按新副本自己的记录写（复制时内存里还不知道旧行置顶过），
+        // 所以旧行的置顶与标签要挂到新副本上，置顶并补写落盘（同 `ingest` 的重新复制）。
         var renewed: [UUID: UUID] = [:]
         var renewedPinned: Set<UUID> = []
         for record in records {

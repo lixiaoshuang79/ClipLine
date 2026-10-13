@@ -327,6 +327,30 @@ final class PinboardTests: XCTestCase {
         store.close()
     }
 
+    func testRecopyKeepsBoardOrderAcrossRestart() throws {
+        // 回归：重新复制标签里的条目，内存里新副本留在原位，磁盘上却按「最新固定」重挂（position = max+1），
+        // 重启后它跳到了标签最前面。
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ClipStore(archive: try ClipArchive(directory: directory))
+        store.ingest(Self.textItem("甲", at: 1))
+        store.ingest(Self.textItem("乙", at: 2))
+        let board = store.addBoard(name: "B")
+        store.pin(store.items.first { $0.fingerprint == "t:甲" }!, to: board.id)
+        store.pin(store.items.first { $0.fingerprint == "t:乙" }!, to: board.id)
+        store.ingest(Self.textItem("甲", at: 3))   // 重新复制先固定的那条
+        XCTAssertEqual(store.shown.map(\.fingerprint), ["t:乙", "t:甲"], "内存里新副本留在原位")
+        store.close()
+
+        let reopened = ClipStore(archive: try ClipArchive(directory: directory))
+        reopened.loadArchive()
+        let deadline = Date().addingTimeInterval(5)
+        while reopened.boards.isEmpty, Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        reopened.activeBoardID = board.id
+        XCTAssertEqual(reopened.shown.map(\.fingerprint), ["t:乙", "t:甲"], "重启后标签内顺序不变")
+        reopened.close()
+    }
+
     func testCopyDuringLaunchKeepsPinAndBoardOfDiskCopy() throws {
         // 回归：启动读库期间又复制了磁盘上已有的内容——新副本转存时顶掉旧行（级联清掉归属），
         // 并入历史时旧行又被当成重复跳过，置顶与标签就都丢了。
