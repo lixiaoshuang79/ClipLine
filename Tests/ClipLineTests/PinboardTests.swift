@@ -330,6 +330,32 @@ final class PinboardTests: XCTestCase {
         store.close()
     }
 
+    func testEmptyHintWhenAllHistoryIsBoarded() {
+        // 回归：条目全部归入标签后历史页是空的，空态却按 `items` 非空走成了「没有匹配「」 Esc 清除」。
+        let store = ClipStore(archive: nil)
+        store.ingest(Self.textItem("甲", at: 1))
+        let board = store.addBoard(name: "B")
+        store.pin(store.items[0], to: board.id)
+        store.activeBoardID = nil
+        XCTAssertTrue(store.shown.isEmpty)
+        var hint = PastePanelView.emptyHint(for: store)
+        XCTAssertEqual(hint.text, "复制点什么，它就会出现在这里")
+        XCTAssertNil(hint.detail)
+        XCTAssertTrue(LineView.ropeIsBare(store), "绳式同样按空绳提示、收起搜索胶囊")
+
+        store.replaceQuery("乙")
+        hint = PastePanelView.emptyHint(for: store)
+        XCTAssertEqual(hint.text, "没有匹配「乙」")
+        XCTAssertEqual(hint.detail, "Esc 清除")
+        XCTAssertFalse(LineView.ropeIsBare(store))
+
+        store.activeBoardID = board.id
+        store.replaceQuery("")
+        XCTAssertEqual(store.shown.count, 1)
+        store.unpin(store.items[0], from: board.id)
+        XCTAssertEqual(PastePanelView.emptyHint(for: store).text, "「B」还是空的")
+    }
+
     func testBoardColorCyclesPalette() {
         let store = ClipStore(archive: nil)
         XCTAssertEqual(store.addBoard(name: "一").color, .red)

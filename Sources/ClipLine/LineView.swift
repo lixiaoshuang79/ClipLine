@@ -84,8 +84,8 @@ struct LineView: View {
             .overlay(alignment: .top) {
                 SearchCapsule(store: store)
                     .padding(.top, Layout.searchTop)
-                    .opacity(store.items.isEmpty ? 0 : 1)
-                    .allowsHitTesting(!store.items.isEmpty)
+                    .opacity(Self.ropeIsBare(store) ? 0 : 1)
+                    .allowsHitTesting(!Self.ropeIsBare(store))
             }
         }
         .environment(\.searchQuery, store.search)
@@ -118,7 +118,7 @@ struct LineView: View {
             Rope(width: width)
             if empty {
                 Group {
-                    if store.items.isEmpty {
+                    if Self.ropeIsBare(store) {
                         Hint(text: "复制点什么，它就会挂在这根绳上")
                     } else {
                         Hint(text: "绳上没有「\(Self.excerpt(store.query))」", detail: "Esc 清除")
@@ -129,6 +129,11 @@ struct LineView: View {
             }
         }
         .frame(width: width, height: Layout.panelHeight)
+    }
+
+    /// 绳上没有可挂的历史（也没在搜索）。不能只看 `items`：归入标签的条目在里面，却不上绳。
+    static func ropeIsBare(_ store: ClipStore) -> Bool {
+        store.shown.isEmpty && store.search.isEmpty
     }
 
     private static func excerpt(_ query: String) -> String {

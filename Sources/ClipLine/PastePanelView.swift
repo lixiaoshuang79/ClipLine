@@ -74,7 +74,8 @@ struct PastePanelView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .overlay(alignment: .top) {
             if store.shown.isEmpty {
-                Hint(text: emptyHint, detail: emptyHintDetail)
+                let hint = Self.emptyHint(for: store)
+                Hint(text: hint.text, detail: hint.detail)
                     .padding(.top, 96)
                     .transition(.opacity)
             }
@@ -124,20 +125,16 @@ struct PastePanelView: View {
         }
     }
 
-    private var emptyHint: String {
+    /// 空态提示。按有没有搜索词分：条目全归入了标签时 `items` 不空，但历史页同样是「还没东西」。
+    static func emptyHint(for store: ClipStore) -> (text: String, detail: String?) {
         if let board = store.board(id: store.activeBoardID) {
-            return store.search.isEmpty ? "「\(board.name)」还是空的"
-                : "「\(board.name)」里没有匹配「\(Self.excerpt(store.query))」的"
+            return store.search.isEmpty
+                ? ("「\(board.name)」还是空的", "去剪贴板历史里右键卡片，固定到「\(board.name)」")
+                : ("「\(board.name)」里没有匹配「\(excerpt(store.query))」的", "Esc 清除")
         }
-        if store.items.isEmpty { return "复制点什么，它就会出现在这里" }
-        return "没有匹配「\(Self.excerpt(store.query))」"
-    }
-
-    private var emptyHintDetail: String? {
-        if let board = store.board(id: store.activeBoardID) {
-            return store.search.isEmpty ? "去剪贴板历史里右键卡片，固定到「\(board.name)」" : "Esc 清除"
-        }
-        return store.items.isEmpty ? nil : "Esc 清除"
+        return store.search.isEmpty
+            ? ("复制点什么，它就会出现在这里", nil)
+            : ("没有匹配「\(excerpt(store.query))」", "Esc 清除")
     }
 
     // MARK: 顶栏（对照 paste-header 实拍）
