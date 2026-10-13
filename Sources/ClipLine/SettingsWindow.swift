@@ -32,7 +32,7 @@ struct SettingsView: View {
                     Text("底部卡片").tag(Settings.PanelStyle.paste)
                 }
                 Text(settings.panelStyle == .rope
-                     ? "按 ⌃⌥V 从菜单栏下方垂下绳与卡片。"
+                     ? "按 \(settings.revealHotKey.display) 从菜单栏下方垂下绳与卡片。"
                      : "底部悬浮面板：横向大卡、来源色头部、毛玻璃底。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -63,7 +63,7 @@ struct SettingsView: View {
                 Picker("图片总预算", selection: $settings.imageBudgetMB) {
                     ForEach([128, 256, 512, 1024], id: \.self) { Text("\($0) MB").tag($0) }
                 }
-                Text("超出后先淘汰最旧的；置顶条目不参与淘汰。")
+                Text("超出后先淘汰最旧的；置顶条目与标签里的条目不参与淘汰。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
