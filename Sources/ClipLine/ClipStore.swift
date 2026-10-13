@@ -158,9 +158,19 @@ final class ClipStore: ObservableObject {
         refilter(queryChanged: false)   // 置顶排最前，顺序会变
     }
 
+    /// 「清空历史」时保留的条目：置顶的与已归入标签的（与 `ClipArchive.deleteAll(keepingPinned:)` 同口径）。
+    private static func survivesClear(_ item: ClipItem) -> Bool {
+        item.pinned || !item.boards.isEmpty
+    }
+
+    /// 「清空历史」会删掉的条数（确认框与菜单可用状态用）。
+    var clearableCount: Int {
+        items.lazy.filter { !Self.survivesClear($0) }.count
+    }
+
     /// 清空历史（置顶条目与已归入标签的条目保留）。
     func clearHistory() {
-        items = items.filter { $0.pinned || !$0.boards.isEmpty }
+        items = items.filter(Self.survivesClear)
         let kept = Set(items.map(\.id))
         boardMembers = boardMembers.mapValues { $0.filter(kept.contains) }
         freshIDs = []

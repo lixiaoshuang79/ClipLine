@@ -242,6 +242,22 @@ final class PinboardTests: XCTestCase {
         XCTAssertEqual(store.shown.map(\.fingerprint), ["t:甲"])
     }
 
+    func testClearableCountMatchesClearHistory() {
+        // 回归：清空确认框只按置顶计数，标签里的条目被算进「将删除」；只剩标签条目时菜单项仍可点却什么也不删。
+        let store = ClipStore(archive: nil)
+        for (offset, text) in ["甲", "乙", "丙"].enumerated() {
+            store.ingest(Self.textItem(text, at: TimeInterval(offset)))
+        }
+        let board = store.addBoard(name: "B")
+        store.pin(store.items.first { $0.fingerprint == "t:甲" }!, to: board.id)
+        store.togglePin(store.items.first { $0.fingerprint == "t:乙" }!)
+        XCTAssertEqual(store.clearableCount, 1, "置顶与标签条目都不算可清")
+
+        store.clearHistory()
+        XCTAssertEqual(store.items.count, 2, "删掉的正好是 clearableCount 条")
+        XCTAssertEqual(store.clearableCount, 0)
+    }
+
     func testRecopyKeepsBoardMembership() {
         let store = ClipStore(archive: nil)
         store.ingest(Self.textItem("甲", at: 1))

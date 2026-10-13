@@ -322,7 +322,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.autoenablesItems = false
         let clear = NSMenuItem(title: "清空历史…", action: #selector(confirmClearHistory), keyEquivalent: "")
         clear.target = self
-        clear.isEnabled = store.items.contains { !$0.pinned }
+        clear.isEnabled = store.clearableCount > 0
         menu.addItem(clear)
         let login = NSMenuItem(title: "登录时启动", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         login.target = self
@@ -360,15 +360,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func confirmClearHistory() {
         tuck(immediate: true)
         NSApp.activate()
-        let pinnedCount = store.items.lazy.filter(\.pinned).count
-        let unpinnedCount = store.items.count - pinnedCount
+        let doomedCount = store.clearableCount
+        let keptCount = store.items.count - doomedCount
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "清空剪贴板历史？"
-        if pinnedCount > 0 {
-            alert.informativeText = "将删除 \(unpinnedCount) 条记录（含本机磁盘上的内容）；\(pinnedCount) 条已置顶的会保留。此操作无法撤销。"
+        if keptCount > 0 {
+            alert.informativeText = "将删除 \(doomedCount) 条记录（含本机磁盘上的内容）；\(keptCount) 条已置顶或已归入标签的会保留。此操作无法撤销。"
         } else {
-            alert.informativeText = "将删除全部 \(unpinnedCount) 条记录，包括保存在本机磁盘上的内容。此操作无法撤销。"
+            alert.informativeText = "将删除全部 \(doomedCount) 条记录，包括保存在本机磁盘上的内容。此操作无法撤销。"
         }
         alert.addButton(withTitle: "清空").hasDestructiveAction = true
         alert.addButton(withTitle: "取消")
