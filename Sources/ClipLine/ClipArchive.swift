@@ -381,11 +381,14 @@ final class ClipArchive {
         Failure(description: db.map { String(cString: sqlite3_errmsg($0)) } ?? "database closed")
     }
 
+    /// 关库之后还可能有迟到的写入（如退出时仍在跑的 OCR），一律报错而不是把空句柄交给 SQLite。
     private func exec(_ sql: String) throws {
+        guard let db else { throw failure() }
         guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { throw failure() }
     }
 
     private func prepare(_ sql: String) throws -> OpaquePointer {
+        guard let db else { throw failure() }
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else { throw failure() }
         return stmt

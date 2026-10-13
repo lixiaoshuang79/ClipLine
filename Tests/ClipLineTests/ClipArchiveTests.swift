@@ -164,6 +164,47 @@ final class ClipArchiveTests: XCTestCase {
         XCTAssertEqual(try reader.count(), 0)
     }
 
+    func testImageOcrDoesNotBlockArchiveQueue() throws {
+        // 回归：OCR 曾直接跑在磁盘串行队列上，粘贴/拖拽在主线程同步读快照时要排在所有待识别图片后面。
+        let archive = try ClipArchive(directory: directory)
+        let store = ClipStore(archive: archive)
+        let gate = DispatchSemaphore(value: 0)
+        store.recognizeImage = { _ in
+            gate.wait()   // 模拟一张识别很慢的图
+            return nil
+        }
+        let image = try XCTUnwrap(ClipItem.make(snapshot: [[.png: Self.png(width: 8, height: 8)]], source: .unknown))
+        store.ingest(image)
+
+        let drained = expectation(description: "磁盘队列不等 OCR")
+        var snapshot: [[NSPasteboard.PasteboardType: Data]]?
+        DispatchQueue.global().async {
+            snapshot = store.snapshotForDrag(image)
+            drained.fulfill()
+        }
+        wait(for: [drained], timeout: 2)
+        gate.signal()
+        XCTAssertNotNil(snapshot?.first?[.png], "OCR 还在跑时也能立刻读回快照")
+
+        // 识别结束后照样写库（空串标记"识别过、没有文字"）。
+        let reader = try ClipArchive(directory: directory)
+        var ocrText: String?
+        for _ in 0..<200 where ocrText == nil {
+            store.flush()
+            ocrText = try reader.loadRecords().first?.ocrText
+            if ocrText == nil { Thread.sleep(forTimeInterval: 0.01) }
+        }
+        XCTAssertEqual(ocrText, "")
+        reader.close()
+        store.close()
+    }
+
+    func testClosedArchiveRejectsLateWrites() throws {
+        let archive = try ClipArchive(directory: directory)
+        archive.close()
+        XCTAssertThrowsError(try archive.setOcr(id: UUID(), text: "迟到的识别结果"), "关库后的写入报错而不是崩溃")
+    }
+
     func testOversizedClipStaysInMemoryOnly() throws {
         let archive = try ClipArchive(directory: directory)
         let store = ClipStore(archive: archive, retention: Retention(maxItems: 10, imageBudget: .max, maxStoredBytes: 4))
