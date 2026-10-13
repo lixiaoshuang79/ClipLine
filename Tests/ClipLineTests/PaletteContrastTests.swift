@@ -26,6 +26,20 @@ final class PaletteContrastTests: XCTestCase {
         }
     }
 
+    func testPasteHeaderAlwaysHasReadableCuff() {
+        // 回归：底部大卡顶栏对未知来源写死了一层灰底，字色却是按卡身配的 ink2，浅色下对比度只有约 1.9:1。
+        for scheme in schemes {
+            let header = CardPalette.cuffed(.unknown, scheme: scheme)
+            let graphite = CardPalette.of(tint: .graphite, scheme: scheme)
+            XCTAssertNotNil(header.cuff, "未知来源的顶栏也有色头 \(scheme)")
+            XCTAssertEqual(header.cuff?.top, graphite.cuff?.top)
+            XCTAssertEqual(header.cuff?.bottom, graphite.cuff?.bottom)
+            XCTAssertEqual(header.cuffInk, graphite.cuffInk, "字色随石墨色头一起换（对比度见 graphite 自检）")
+        }
+        let dyed = CardPalette.cuffed(.continuity, scheme: .light)
+        XCTAssertEqual(dyed.cuff?.top, CardPalette.of(.continuity, scheme: .light).cuff?.top, "已染色的来源照用自己的色头")
+    }
+
     func testYellowBandUsesDarkInk() {
         let tint = SourceTint.normalized(h: 95, c: 0.14, h2: nil)
         XCTAssertEqual(tint.style, .yellow)

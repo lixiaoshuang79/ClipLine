@@ -175,11 +175,22 @@ struct CardPalette {
     private static var cache: [Key: CardPalette] = [:]
 
     static func of(_ source: ClipSource, scheme: ColorScheme) -> CardPalette {
-        let key = Key(tint: SourceTint.of(source), dark: scheme == .dark)
+        of(tint: SourceTint.of(source), scheme: scheme)
+    }
+
+    static func of(tint: SourceTint, scheme: ColorScheme) -> CardPalette {
+        let key = Key(tint: tint, dark: scheme == .dark)
         if let hit = cache[key] { return hit }
-        let palette = CardPalette(key.tint.tones(for: scheme))
+        let palette = CardPalette(tint.tones(for: scheme))
         cache[key] = palette
         return palette
+    }
+
+    /// 一定要有色头的场合（底部大卡的顶栏）：未染色色板的 `cuffInk` 是按卡身配的，
+    /// 不能压在别的底色上，所以整套借石墨色头（对比度由自检覆盖）。
+    static func cuffed(_ source: ClipSource, scheme: ColorScheme) -> CardPalette {
+        let palette = of(source, scheme: scheme)
+        return palette.cuff == nil ? of(tint: .graphite, scheme: scheme) : palette
     }
 }
 

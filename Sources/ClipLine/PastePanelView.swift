@@ -378,7 +378,7 @@ private struct PasteCardView: View {
         let palette = CardPalette.of(item.source, scheme: scheme)
         let selected = store.selectedID == item.id
         VStack(spacing: 0) {
-            header(palette)
+            header(CardPalette.cuffed(item.source, scheme: scheme))
             PasteCardBody(item: item, palette: palette)
         }
         .frame(width: PastePanelView.cardWidth, height: PastePanelView.cardHeight)
@@ -453,11 +453,12 @@ private struct PasteCardView: View {
         Button("移除", role: .destructive) { store.remove(item) }
     }
 
+    /// `palette` 来自 `CardPalette.cuffed`，一定带色头。
     private func header(_ palette: CardPalette) -> some View {
         ZStack {
-            LinearGradient(colors: [palette.cuff?.top ?? Color(white: scheme == .dark ? 0.38 : 0.62),
-                                    palette.cuff?.bottom ?? Color(white: scheme == .dark ? 0.28 : 0.5)],
-                           startPoint: .top, endPoint: .bottom)
+            if let cuff = palette.cuff {
+                LinearGradient(colors: [cuff.top, cuff.bottom], startPoint: .top, endPoint: .bottom)
+            }
             HStack(alignment: .center, spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(verbatim: Self.title(of: item))
