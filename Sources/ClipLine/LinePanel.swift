@@ -70,11 +70,6 @@ class ClipPanel: NSPanel {
     /// 没有主菜单的 accessory App 收不到编辑快捷键，这里直接转给搜索框的字段编辑器。
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        // ⇧⌘N：新建标签（Paste 的「创建 Pinboard」同款；绳式面板没有标签，无副作用）。
-        if flags == [.command, .shift], event.charactersIgnoringModifiers?.lowercased() == "n" {
-            NotificationCenter.default.post(name: .clipLineCreateBoard, object: nil)
-            return true
-        }
         if flags == .command || flags == [.command, .shift],
            let key = event.charactersIgnoringModifiers?.lowercased() {
             let shift = flags.contains(.shift)
@@ -136,6 +131,17 @@ final class PastePanel: ClipPanel {
         hasShadow = true
         // 浮在 Dock 之上（Dock 层 ≈ 20）：面板下缘与 Dock 区域重叠，卡片要盖在 Dock 上沿。
         level = .mainMenu
+    }
+
+    /// ⇧⌘N：新建标签（Paste 的「创建 Pinboard」同款）。只有这块面板有标签栏：放在基类里时，
+    /// 绳式面板按下也会让藏着的底部面板进入新建态，换样式后凭空冒出一个输入框。
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command, .shift],
+           event.charactersIgnoringModifiers?.lowercased() == "n" {
+            NotificationCenter.default.post(name: .clipLineCreateBoard, object: nil)
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
     }
 
     /// 版式按 Paste 快捷面板实拍：全屏宽减左右 6pt、**贴屏幕底边**（不是 visibleFrame，
