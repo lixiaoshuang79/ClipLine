@@ -89,15 +89,16 @@ final class ClipStore: ObservableObject {
         if items.first?.fingerprint == captured.fingerprint { return }
         var item = captured
         // 重新复制一条已置顶或已归入标签的内容：状态跟着新副本走（同指纹旧行会被新行替换）。
+        var carriedBoards: Set<UUID> = []
         if let old = items.first(where: { $0.fingerprint == item.fingerprint }) {
             if old.pinned { item.pinned = true }
             if !old.boards.isEmpty {
                 item.boards = old.boards
+                carriedBoards = old.boards
                 for board in old.boards {
                     if let index = boardMembers[board]?.firstIndex(of: old.id) {
                         boardMembers[board]?[index] = item.id
                     }
-                    persist { try $0.addMembership(pinboard: board, clip: item.id) }
                 }
             }
         }
@@ -108,12 +109,19 @@ final class ClipStore: ObservableObject {
         }
         if let archive, item.bytes <= retention.maxStoredBytes, let record = item.record {
             item.snapshot = nil
-            io.async { [weak self] in
+            io.async {
                 do {
                     try archive.insert(record)
                 } catch {
                     Self.log("store: insert failed, keeping clip in memory: \(error)")
-                    DispatchQueue.main.async { self?.keepInMemory(record) }
+                    DispatchQueue.main.async { self.keepInMemory(record) }
+                    return
+                }
+                // 归属重挂必须排在转存之后：insert 会先删同指纹旧行（级联清掉旧归属），新行落库后归属才有处可挂。
+                for board in carriedBoards {
+                    do { try archive.addMembership(pinboard: board, clip: record.id) } catch {
+                        Self.log("store: board membership restore failed: \(error)")
+                    }
                 }
             }
             if let ocrCandidate {

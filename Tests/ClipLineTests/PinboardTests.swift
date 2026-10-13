@@ -262,6 +262,33 @@ final class PinboardTests: XCTestCase {
         XCTAssertEqual(store.shown.map(\.fingerprint), ["t:甲"])
     }
 
+    func testRecopyPersistsBoardMembership() throws {
+        // 回归：归属重挂曾排在转存之前，撞 pinboard_items 的外键（新行还没落库），重启后归属丢失。
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let archive = try ClipArchive(directory: directory)
+        let store = ClipStore(archive: archive)
+        store.ingest(Self.textItem("甲", at: 1))
+        let board = store.addBoard(name: "B")
+        let jia = store.items.first { $0.fingerprint == "t:甲" }!
+        store.pin(jia, to: board.id)
+        store.ingest(Self.textItem("丙", at: 3))
+        store.flush()
+        store.ingest(Self.textItem("甲", at: 4))   // 重新复制
+        store.flush()
+
+        let renewed = store.items.first { $0.fingerprint == "t:甲" }!
+        XCTAssertNotEqual(renewed.id, jia.id, "换成了新副本")
+        let check = try ClipArchive(directory: directory)
+        let rows = try check.loadMemberships()
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.pinboard, board.id)
+        XCTAssertEqual(rows.first?.clip, renewed.id, "磁盘上的归属指向新行")
+        XCTAssertEqual(try check.loadPinboards().count, 1)
+        check.close()
+        store.close()
+    }
+
     func testBoardColorCyclesPalette() {
         let store = ClipStore(archive: nil)
         XCTAssertEqual(store.addBoard(name: "一").color, .red)
