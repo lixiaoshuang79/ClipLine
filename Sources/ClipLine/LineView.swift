@@ -82,10 +82,16 @@ struct LineView: View {
                 }
             }
             .overlay(alignment: .top) {
-                SearchCapsule(store: store)
-                    .padding(.top, Layout.searchTop)
-                    .opacity(Self.ropeIsBare(store) ? 0 : 1)
-                    .allowsHitTesting(!Self.ropeIsBare(store))
+                HStack(spacing: 10) {
+                    if !Self.ropeIsBare(store) {
+                        SearchCapsule(store: store)
+                            .transition(.opacity)
+                    }
+                    if !store.boards.isEmpty {
+                        TagSwitcher(store: store)
+                    }
+                }
+                .padding(.top, Layout.searchTop)
             }
         }
         .environment(\.searchQuery, store.search)
@@ -118,10 +124,12 @@ struct LineView: View {
             Rope(width: width)
             if empty {
                 Group {
-                    if Self.ropeIsBare(store) {
-                        Hint(text: "复制点什么，它就会挂在这根绳上")
-                    } else {
+                    if !store.search.isEmpty {
                         Hint(text: "绳上没有「\(Self.excerpt(store.query))」", detail: "Esc 清除")
+                    } else if let board = store.board(id: store.activeBoardID) {
+                        Hint(text: "「\(board.name)」还是空的")
+                    } else {
+                        Hint(text: "复制点什么，它就会挂在这根绳上")
                     }
                 }
                 .position(x: width / 2, y: Layout.ropeY(x: width / 2, width: width) + 44)
@@ -158,6 +166,59 @@ private struct Hint: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(.regularMaterial, in: Capsule())
+    }
+}
+
+/// 绳式的标签切换（搜索框旁）：默认「全部」= 含已归入标签的条目；选某个标签则只看它。
+/// 与底部面板的标签页共用 `store.activeBoardID`。
+private struct TagSwitcher: View {
+    @ObservedObject var store: ClipStore
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let p = CardPalette.of(.unknown, scheme: scheme)
+        let active = store.board(id: store.activeBoardID)
+        Menu {
+            Toggle("全部", isOn: Binding(
+                get: { store.activeBoardID == nil },
+                set: { if $0 { store.activeBoardID = nil } }))
+            Divider()
+            ForEach(store.boards) { board in
+                Toggle(board.name, isOn: Binding(
+                    get: { store.activeBoardID == board.id },
+                    set: { if $0 { store.activeBoardID = board.id } }))
+            }
+        } label: {
+            HStack(spacing: 6) {
+                if let active {
+                    Circle().fill(active.color.color).frame(width: 7, height: 7)
+                } else {
+                    Image(systemName: "square.stack.3d.up")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(p.ink3)
+                }
+                Text(active?.name ?? "全部")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(p.ink2)
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(p.ink3)
+            }
+            .padding(.horizontal, 11)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        // 胶囊底盘放在 Menu 外层：borderlessButton 样式会把 label 的背景吃掉。
+        .frame(maxWidth: 160, minHeight: Layout.searchHeight)
+        .background {
+            // 点控件空白处不该穿透到底下的"点空白收起"。
+            Capsule().fill(Color.clear).contentShape(Capsule()).onTapGesture {}
+        }
+        .glassFrame(capsule: true, material: .regularMaterial)
+        .shadow(color: .black.opacity(scheme == .dark ? 0.35 : 0.10), radius: 10, y: 4)
+        .help("按标签筛选（默认全部）")
     }
 }
 

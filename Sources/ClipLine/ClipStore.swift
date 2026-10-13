@@ -30,7 +30,7 @@ final class ClipStore: ObservableObject {
     /// 搜索词被外部改写（清除、调试预填）时递增，通知搜索框同步文字。
     @Published private(set) var fieldRevision = 0
     @Published private(set) var scrollRequest: ScrollRequest?
-    /// 当前在看的标签板（nil = 剪贴板历史）。绳式样式不展示标签，应保持 nil。
+    /// 当前在看的标签板（nil = 默认视图）。绳式样式不展示标签页，应保持 nil。
     @Published var activeBoardID: UUID? = nil {
         didSet {
             guard oldValue != activeBoardID else { return }
@@ -39,6 +39,11 @@ final class ClipStore: ObservableObject {
             selectedID = shown.first?.id
             requestScroll(.start)
         }
+    }
+    /// 默认视图（未选标签）是否包含已归入标签的条目：绳式 = 「全部」（true），底部面板 = 剪贴板历史（false）。
+    /// 由 AppDelegate 随面板样式设置。
+    var defaultViewIncludesBoarded = false {
+        didSet { if oldValue != defaultViewIncludesBoarded { refilter(queryChanged: false) } }
     }
     /// 用户自建的标签板，按顶栏顺序排列。
     @Published private(set) var boards: [Pinboard] = []
@@ -361,9 +366,10 @@ final class ClipStore: ObservableObject {
             let byID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
             scoped = (boardMembers[boardID] ?? []).compactMap { byID[$0] }
         } else {
-            // 剪贴板历史：归入标签的条目不在其中流转；置顶的挂在最前面（组内保持既有时序）。
-            let history = items.filter { $0.boards.isEmpty }
-            scoped = history.filter(\.pinned) + history.filter { !$0.pinned }
+            // 底部面板的剪贴板历史：归入标签的条目不在其中流转；绳式默认「全部」，照常挂在绳上。
+            let base = defaultViewIncludesBoarded ? items : items.filter { $0.boards.isEmpty }
+            // 置顶的挂在绳的最前面（组内保持既有时序）。
+            scoped = base.filter(\.pinned) + base.filter { !$0.pinned }
         }
         let next = search.isEmpty ? scoped : scoped.filter(search.matches)
         shown = next

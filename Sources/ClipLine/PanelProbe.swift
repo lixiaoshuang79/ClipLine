@@ -99,6 +99,19 @@ final class PanelProbe {
                 note("标签视图: SKIP（绳式或没有标签）")
             }
 
+            // 7) 绳式「全部」视图（切换控件默认项）：标签里的条目照常挂在绳上。
+            if !isBottom, let demoBoard = store.boards.first {
+                store.activeBoardID = nil
+                await sleep(0.25)
+                note("全部视图: \(store.shown.count == 11 ? "OK" : "FAIL")（\(store.shown.count) 条，期望 11）")
+                store.activeBoardID = demoBoard.id
+                await sleep(0.25)
+                note("绳上标签视图: \(store.shown.count == 2 ? "OK" : "FAIL")（\(store.shown.count) 条，期望 2）")
+                store.activeBoardID = nil
+            } else {
+                note("全部视图: SKIP（底部面板或没有标签）")
+            }
+
             finish()
         }
     }

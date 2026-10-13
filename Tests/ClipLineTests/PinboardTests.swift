@@ -418,6 +418,24 @@ final class PinboardTests: XCTestCase {
         XCTAssertEqual(PastePanelView.emptyHint(for: store).text, "「B」还是空的")
     }
 
+    func testDefaultViewCanIncludeBoardedItems() {
+        // 绳式默认「全部」：已归入标签的条目照常挂在绳上；底部面板默认不显示。
+        let store = ClipStore(archive: nil)
+        store.ingest(Self.textItem("甲", at: 1))
+        store.ingest(Self.textItem("乙", at: 2))
+        let board = store.addBoard(name: "B")
+        let jia = store.items.first { $0.fingerprint == "t:甲" }!
+        store.pin(jia, to: board.id)
+        store.activeBoardID = nil
+        XCTAssertEqual(store.shown.map(\.fingerprint), ["t:乙"], "底部面板默认：标签条目不在历史里")
+        store.defaultViewIncludesBoarded = true
+        XCTAssertEqual(store.shown.map(\.fingerprint), ["t:乙", "t:甲"], "绳式默认「全部」：含已归标签的条目")
+        store.activeBoardID = board.id
+        XCTAssertEqual(store.shown.map(\.fingerprint), ["t:甲"], "切换控件选标签：只看它")
+        store.activeBoardID = nil
+        XCTAssertEqual(store.shown.map(\.fingerprint), ["t:乙", "t:甲"], "切回「全部」")
+    }
+
     func testBoardColorCyclesPalette() {
         let store = ClipStore(archive: nil)
         XCTAssertEqual(store.addBoard(name: "一").color, .red)

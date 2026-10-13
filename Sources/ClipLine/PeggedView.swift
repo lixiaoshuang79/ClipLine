@@ -79,7 +79,15 @@ struct PeggedView: View {
     }
 
     private var removeBadge: some View {
-        Button { store.remove(item) } label: {
+        // 标签视图里 = 移出本标签；默认视图（全部/历史）里仍是摘下这条。
+        let inBoard = store.activeBoardID.flatMap { active in item.boards.contains(active) ? active : nil }
+        return Button {
+            if let inBoard {
+                store.unpin(item, from: inBoard)
+            } else {
+                store.remove(item)
+            }
+        } label: {
             Image(systemName: "xmark")
                 .font(.system(size: 7.5, weight: .bold))
                 .foregroundStyle(CardPalette.of(item.source, scheme: scheme).ink)
@@ -92,7 +100,7 @@ struct PeggedView: View {
         .opacity(hovering ? 1 : 0)
         .scaleEffect(hovering ? 1 : 0.6)
         .animation(.easeOut(duration: 0.15), value: hovering)
-        .help("从绳上摘掉这条")
+        .help(inBoard == nil ? "从绳上摘掉这条" : "移出本标签")
     }
 
     /// 置顶按钮：悬停出现；已置顶时保持半透明常驻，随时可以取消。

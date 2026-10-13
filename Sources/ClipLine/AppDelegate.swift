@@ -216,8 +216,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func reveal() {
         let front = NSWorkspace.shared.frontmostApplication
         previousApp = (front?.processIdentifier == getpid()) ? nil : front
-        // 绳式不展示标签页；切回绳时回到剪贴板历史。
-        if settings.effectivePanelStyle != .paste { store.activeBoardID = nil }
+        // 绳式默认「全部」（含已归标签的条目，用搜索框旁的切换控件筛选）；底部面板默认剪贴板历史。
+        store.defaultViewIncludesBoarded = settings.effectivePanelStyle != .paste
         let board = activePanel
         board.placeOnScreen()
         if store.selectedItem == nil { store.selectedID = store.shown.first?.id }

@@ -140,27 +140,32 @@ struct PastePanelView: View {
     // MARK: 顶栏（对照 paste-header 实拍）
 
     /// 居中：搜索 · 剪贴板历史药丸 · 各标签（色点 + 名字）· 新建 ⊕；右侧 … 溢出菜单。
+    /// 标签多或名字长时整条横向可滚；内容不超宽时仍整组居中。
     private var toolbar: some View {
         HStack(spacing: 0) {
-            Spacer(minLength: 12)
-            HStack(spacing: 14) {
-                searchCluster
-                historyTab
-                ForEach(store.boards) { board in
-                    boardTab(board)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 14) {
+                    searchCluster
+                    historyTab
+                    ForEach(store.boards) { board in
+                        boardTab(board)
+                    }
+                    if creatingBoard {
+                        InlineTextField(initial: "未命名",
+                                        onCommit: { name in
+                                            creatingBoard = false
+                                            store.addBoard(name: name)
+                                        },
+                                        onCancel: { creatingBoard = false })
+                            .frame(width: 110, height: 20)
+                    }
+                    plusButton
                 }
-                if creatingBoard {
-                    InlineTextField(initial: "未命名",
-                                    onCommit: { name in
-                                        creatingBoard = false
-                                        store.addBoard(name: name)
-                                    },
-                                    onCancel: { creatingBoard = false })
-                        .frame(width: 110, height: 20)
-                }
-                plusButton
+                .padding(.horizontal, 12)
+                .frame(maxWidth: .infinity)   // 比视口窄时撑满，交给外层居中
             }
-            Spacer(minLength: 12)
+            // 顶栏空白处点击仍然收起面板（ScrollView 会把空白处的点击吃掉，用底垫补回来）。
+            .background(Color.clear.contentShape(Rectangle()).onTapGesture { store.onRequestTuck?() })
             overflowMenu
                 .padding(.trailing, 16)
         }
@@ -404,8 +409,14 @@ private struct PasteCardView: View {
         .animation(.easeOut(duration: 0.12), value: selected)
         .overlay(alignment: .topTrailing) {
             if hovering {
+                // 标签视图里 × 是「移出本标签」（不是彻底删除）；历史视图里仍是移除这条。
+                let inBoard = store.activeBoardID.flatMap { active in item.boards.contains(active) ? active : nil }
                 Button {
-                    store.remove(item)
+                    if let inBoard {
+                        store.unpin(item, from: inBoard)
+                    } else {
+                        store.remove(item)
+                    }
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 15))
@@ -415,7 +426,7 @@ private struct PasteCardView: View {
                 }
                 .buttonStyle(.plain)
                 .padding(7)
-                .help("移除这条")
+                .help(inBoard == nil ? "移除这条" : "移出本标签")
                 .transition(.opacity)
             }
         }
@@ -443,10 +454,12 @@ private struct PasteCardView: View {
         }
         if let activeID = store.activeBoardID, item.boards.contains(activeID),
            let board = store.board(id: activeID) {
+            // 标签视图里只有「移出」：彻底删除去历史视图操作，避免误删多标签共有的条目。
             Button("从「\(board.name)」移出") { store.unpin(item, from: activeID) }
+        } else {
+            Divider()
+            Button("移除", role: .destructive) { store.remove(item) }
         }
-        Divider()
-        Button("移除", role: .destructive) { store.remove(item) }
     }
 
     /// `palette` 来自 `CardPalette.cuffed`，一定带色头。
