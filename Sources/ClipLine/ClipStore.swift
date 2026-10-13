@@ -30,6 +30,14 @@ final class ClipStore: ObservableObject {
     /// 搜索词被外部改写（清除、调试预填）时递增，通知搜索框同步文字。
     @Published private(set) var fieldRevision = 0
     @Published private(set) var scrollRequest: ScrollRequest?
+    /// 底部面板「实用链接」页签：只展示链接卡。绳式样式应保持 nil。
+    @Published var kindFilter: KindFilter? = nil {
+        didSet { if oldValue != kindFilter { refilter(queryChanged: false) } }
+    }
+
+    enum KindFilter: Equatable {
+        case links
+    }
 
     /// 由 AppDelegate 注入：卡片上的动作要走它的收尾逻辑（隐藏面板、合成 ⌘V）。
     var onRequestTuck: (() -> Void)?
@@ -231,7 +239,11 @@ final class ClipStore: ObservableObject {
     private func refilter(queryChanged: Bool) {
         // 置顶的挂在绳的最前面（组内保持既有时序）。
         let ordered = items.filter(\.pinned) + items.filter { !$0.pinned }
-        shown = search.isEmpty ? ordered : ordered.filter(search.matches)
+        var next = search.isEmpty ? ordered : ordered.filter(search.matches)
+        if kindFilter == .links {
+            next = next.filter { if case .link = $0.kind { return true }; return false }
+        }
+        shown = next
         let selectionVisible = selectedID.map { id in shown.contains { $0.id == id } } ?? false
         if queryChanged, !search.isEmpty {
             selectedID = shown.first?.id

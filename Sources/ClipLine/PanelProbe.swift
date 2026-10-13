@@ -92,7 +92,7 @@ final class PanelProbe {
         let firstLeft = p.minX + PastePanelView.rowPadding + 1 + PastePanelView.cardSpacing
         let centerX = firstLeft + PastePanelView.cardWidth / 2
             + CGFloat(index) * (PastePanelView.cardWidth + PastePanelView.cardSpacing)
-        let centerY = p.maxY - 63 - PastePanelView.cardHeight / 2
+        let centerY = p.maxY - PastePanelView.chromeHeight - PastePanelView.cardHeight / 2
         clickScreen(board, at: NSPoint(x: centerX, y: centerY))
     }
 

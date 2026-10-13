@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settingsWindow = SettingsWindowController()
     private var settingsObserver: AnyCancellable?
     private var styleObserver: AnyCancellable?
+    private var openSettingsObserver: NSObjectProtocol?
     private var statusItem: NSStatusItem!
     private var outsideMonitor: Any?
     private var orderOutWork: DispatchWorkItem?
@@ -56,7 +57,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         // 换面板样式：先把当前面板收起，下次唤出用新样式。
         styleObserver = settings.$panelStyle.dropFirst().sink { [weak self] _ in
+            self?.store.kindFilter = nil
             self?.tuck(immediate: true)
+        }
+        openSettingsObserver = NotificationCenter.default.addObserver(
+            forName: .clipLineOpenSettings, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.openSettings()
         }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -156,6 +163,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        if let openSettingsObserver {
+            NotificationCenter.default.removeObserver(openSettingsObserver)
+        }
         store.close()
     }
 
@@ -206,6 +216,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func reveal() {
         let front = NSWorkspace.shared.frontmostApplication
         previousApp = (front?.processIdentifier == getpid()) ? nil : front
+        // 绳式不认底部页签过滤；切回绳时清掉，避免只剩链接卡。
+        if settings.effectivePanelStyle != .paste { store.kindFilter = nil }
         let board = activePanel
         board.placeOnScreen()
         if store.selectedItem == nil { store.selectedID = store.shown.first?.id }
