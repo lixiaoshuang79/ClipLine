@@ -2,19 +2,27 @@ import AppKit
 import SwiftUI
 
 /// 「底部卡片（Paste 式）」面板——设置里与晾衣绳二选一。
-/// 版式对照 Paste 快捷面板实拍逐像素：贴底 327 / 顶栏 63 / 卡 231.5×230 / 圆角 14 / 间距 12。
+/// 版式对照 Paste 快捷面板实拍逐像素：贴底 327 / 顶栏 63 / 卡 231.5×230 / 卡圆角 20 / 间距 12。
 struct PastePanelView: View {
     @ObservedObject var store: ClipStore
 
     // 几何全部按 Paste 快捷面板实拍像素实测（2x 截图折算）：
-    // 面板贴屏幕底边、高 327pt；卡片 231.5×230（近正方）；圆角 14；间距 12。
+    // 面板贴屏幕底边、高 327pt；卡片 231.5×230（近正方）；间距 12。
     static let panelHeight: CGFloat = 327
     static let sideMargin: CGFloat = 6
-    static let cornerRadius: CGFloat = 20
+    /// 玻璃面板圆角：REA 逆向 setCornerRadius(26.0)，实拍角弧像素拟合 R=52px@2x=26pt 吻合；旧系统 20。
+    static var cornerRadius: CGFloat {
+        if #available(macOS 26.0, *) { return 26 }
+        return 20
+    }
     static let cardWidth: CGFloat = 231.5
     static let cardHeight: CGFloat = 230
     static let cardSpacing: CGFloat = 12
-    static let cardCornerRadius: CGFloat = 14
+    /// 卡片圆角：REA 逆向 macOS 26+ = 20（旧 14，kCACornerCurveCircular）；实拍亚像素拟合 ≈21.8pt 佐证。
+    static var cardCornerRadius: CGFloat {
+        if #available(macOS 26.0, *) { return 20 }
+        return 14
+    }
     static let headerHeight: CGFloat = 47.5
     static let rowPadding: CGFloat = 14
     /// 顶栏占位（PanelProbe 点卡几何依赖此值）：paddingTop 14 + toolbar 30 + 卡顶距 19 = 63。
@@ -73,18 +81,18 @@ struct PastePanelView: View {
         }
         .background {
             ZStack {
-                PanelGlass()
+                PanelGlass(cornerRadius: Self.cornerRadius)
                 if scheme == .dark { Rectangle().fill(.black.opacity(0.22)) }
                 // 点空白收起：最底层兄弟层，避免吞掉卡片点击。
                 Color.clear.contentShape(Rectangle()).onTapGesture { store.onRequestTuck?() }
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .circular))
         .overlay {
             ZStack {
-                RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                RoundedRectangle(cornerRadius: Self.cornerRadius, style: .circular)
                     .strokeBorder(.white.opacity(scheme == .dark ? 0.08 : 0.55), lineWidth: 0.5)
-                RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                RoundedRectangle(cornerRadius: Self.cornerRadius, style: .circular)
                     .strokeBorder(.black.opacity(scheme == .dark ? 0.45 : 0.06), lineWidth: 0.5)
             }
         }
@@ -288,7 +296,8 @@ private struct PasteCardView: View {
     @State private var hovering = false
 
     private var shape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: PastePanelView.cardCornerRadius, style: .continuous)
+        // REA 逆向量：kCACornerCurveCircular（圆角，非 continuous 超椭圆）。
+        RoundedRectangle(cornerRadius: PastePanelView.cardCornerRadius, style: .circular)
     }
 
     /// Paste 实拍选中环：固定系统蓝，不跟来源色走。
@@ -568,9 +577,17 @@ private struct PasteCardBody: View {
 
 // MARK: - Chrome helpers
 
-/// 面板毛玻璃：NSVisualEffectView material = menu（REA 逆向，同 Paste）。
+/// 面板玻璃：macOS 26+ 用官方「液态玻璃」NSGlassEffectView（REA 逆向证实 Paste 同款做法：
+/// 玻璃容器 + setCornerRadius）；旧系统回退 NSVisualEffectView material = menu。
 private struct PanelGlass: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
+    var cornerRadius: CGFloat
+
+    func makeNSView(context: Context) -> NSView {
+        if #available(macOS 26.0, *) {
+            let view = NSGlassEffectView()
+            view.cornerRadius = cornerRadius
+            return view
+        }
         let view = NSVisualEffectView()
         view.material = .menu
         view.blendingMode = .behindWindow
@@ -578,7 +595,11 @@ private struct PanelGlass: NSViewRepresentable {
         return view
     }
 
-    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
+    func updateNSView(_ view: NSView, context: Context) {
+        if #available(macOS 26.0, *), let glass = view as? NSGlassEffectView {
+            glass.cornerRadius = cornerRadius
+        }
+    }
 }
 
 /// 面板内的小提示胶囊（空态/拖入态）。
