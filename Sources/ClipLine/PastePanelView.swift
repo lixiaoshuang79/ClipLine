@@ -252,12 +252,11 @@ struct PastePanelView: View {
             .contextMenu {
                 Button("重命名") { renamingBoard = board.id }
                 Menu("颜色") {
+                    // 菜单里的 Toggle 渲染成带勾选列的菜单项，文字对齐；手写「✓ 」前缀会把选中项挤歪。
                     ForEach(PinboardColor.allCases, id: \.self) { color in
-                        Button {
-                            store.setBoardColor(board.id, color)
-                        } label: {
-                            Text(color == board.color ? "✓ \(color.displayName)" : color.displayName)
-                        }
+                        Toggle(color.displayName, isOn: Binding(
+                            get: { color == board.color },
+                            set: { if $0 { store.setBoardColor(board.id, color) } }))
                     }
                 }
                 Divider()
@@ -435,15 +434,9 @@ private struct PasteCardView: View {
         Button(item.pinned ? "取消置顶" : "置顶") { store.togglePin(item) }
         Menu("固定到") {
             ForEach(store.boards) { board in
-                Button {
-                    if item.boards.contains(board.id) {
-                        store.unpin(item, from: board.id)
-                    } else {
-                        store.pin(item, to: board.id)
-                    }
-                } label: {
-                    Text(item.boards.contains(board.id) ? "✓ \(board.name)" : board.name)
-                }
+                Toggle(board.name, isOn: Binding(
+                    get: { item.boards.contains(board.id) },
+                    set: { $0 ? store.pin(item, to: board.id) : store.unpin(item, from: board.id) }))
             }
             if !store.boards.isEmpty { Divider() }
             Button("创建标签…") { onCreateBoard(item) }
