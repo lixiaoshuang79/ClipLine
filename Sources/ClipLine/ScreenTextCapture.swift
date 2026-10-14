@@ -134,6 +134,8 @@ final class ScreenTextCapture {
     /// 各屏依次抓一帧（显示器原生像素）。任何一块抓不到就视为没有屏幕录制权限。
     /// 走 ScreenCaptureKit 而不是旧的 CGDisplayCreateImage：新系统对旧采集通道的授权校验
     /// 更不稳定（已授权仍可能被反复弹授权窗），SCK 的授权一次即持久、也非废弃接口。
+    /// ⚠️ `SCDisplay.width/height` 是**点**不是像素（Retina 屏按它设尺寸会抓出半分辨率糊图），
+    /// 尺寸必须用 `CGDisplayPixelsWide/High` 拿原生像素。
     private static func freeze(_ screens: [NSScreen]) async -> [CGImage]? {
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
@@ -143,8 +145,12 @@ final class ScreenTextCapture {
                     return nil
                 }
                 let config = SCStreamConfiguration()
-                config.width = display.width
-                config.height = display.height
+                // ⚠️ SCDisplay.width/height 和 CGDisplayPixelsWide 在「缩放分辨率」模式下都只给**逻辑**宽度
+                // （1512pt 的屏会报 1512，照它抓就得到半分辨率糊图，识别率崩）。真实原生像素在显示模式的
+                // pixelWidth/Height（3024）——这才是抓屏原生分辨率。
+                let mode = CGDisplayCopyDisplayMode(display.displayID)
+                config.width = mode?.pixelWidth ?? display.width
+                config.height = mode?.pixelHeight ?? display.height
                 config.showsCursor = false
                 config.captureResolution = .best
                 let image = try await SCScreenshotManager.captureImage(
@@ -160,6 +166,41 @@ final class ScreenTextCapture {
 
     private static func displayID(_ screen: NSScreen) -> CGDirectDisplayID {
         (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? CGMainDisplayID()
+    }
+
+    /// 静默体检（CLIPLINE_OCR_RUN_DEBUG=preflight）：逐屏抓一帧，报告尺寸链与整图试识别结果。
+    /// 只记录数量与长度，不落屏上内容。
+    static func probe() async -> String {
+        var lines: [String] = []
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            for screen in NSScreen.screens {
+                guard let display = content.displays.first(where: { $0.displayID == displayID(screen) }) else {
+                    lines.append("screen=\(Int(screen.frame.width))x\(Int(screen.frame.height))pt scale=\(screen.backingScaleFactor)：SCDisplay 未找到")
+                    continue
+                }
+                let mode = CGDisplayCopyDisplayMode(display.displayID)
+                lines.append("screen=\(Int(screen.frame.width))x\(Int(screen.frame.height))pt scale=\(screen.backingScaleFactor) SCDisplay=\(display.width)x\(display.height) modePixels=\(mode?.pixelWidth ?? 0)x\(mode?.pixelHeight ?? 0)")
+                do {
+                    let config = SCStreamConfiguration()
+                    config.width = mode?.pixelWidth ?? display.width
+                    config.height = mode?.pixelHeight ?? display.height
+                    config.showsCursor = false
+                    config.captureResolution = .best
+                    let image = try await SCScreenshotManager.captureImage(
+                        contentFilter: SCContentFilter(display: display, excludingWindows: []), configuration: config)
+                    let imageScale = Double(image.width) / Double(max(screen.frame.width, 1))
+                    lines.append("  captured=\(image.width)x\(image.height)（等效 scale=\(String(format: "%.2f", imageScale))）")
+                    let text = Ocr.recognize(image, minimumTextHeightPixels: 6 * CGFloat(imageScale))
+                    lines.append("  fullOCR chars=\(text?.count ?? -1) thr=\(String(format: "%.1f", 6 * imageScale))px")
+                } catch {
+                    lines.append("  抓屏失败：\(error)")
+                }
+            }
+        } catch {
+            lines.append("freeze 失败：\(error)")
+        }
+        return lines.joined(separator: "\n") + "\n"
     }
 
     /// 两帧的分块灰度平均绝对差，取第 90 百分位：大面积不同才算不同（时钟跳秒之类的小块差异不计）。
@@ -313,7 +354,7 @@ final class ScreenTextCapture {
             guard let self, !done, self.generation == token, !self.selecting else { return }
             self.present(.working, on: screen)
         }
-        let scale = screen.backingScaleFactor
+        let scale = CGFloat(image.width) / max(screen.frame.width, 1)   // 实际成图比例（抓的是原生像素，= 2）
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let text = Ocr.recognize(crop, minimumTextHeightPixels: 6 * scale)
             DispatchQueue.main.async {
