@@ -10,6 +10,7 @@ final class OcrResultPanel: NSPanel {
         case copied(String)
         case copiedWithoutBreaks(String)
         case empty
+        case engineBusy
         case tooLarge
     }
 
@@ -85,6 +86,8 @@ final class OcrResultPanel: NSPanel {
             setTexts("已复制去掉换行的文字", Self.preview(text))
         case .empty:
             setTexts("没有识别到文字", "换个区域再试一次")
+        case .engineBusy:
+            setTexts("识别引擎暂时不可用", "稍等片刻再试一次")
         case .tooLarge:
             setTexts("选区太大", "缩小一些再试")
         }

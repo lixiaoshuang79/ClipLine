@@ -64,8 +64,14 @@ final class ClipStore: ObservableObject {
     private let io = DispatchQueue(label: "com.ashuang.clipline.archive", qos: .utility)
     /// 图片 OCR 单走一条串行队列：识别一张要几百毫秒，排在 `io` 上会让粘贴/拖拽的同步读快照一直等。
     private let ocrQueue = DispatchQueue(label: "com.ashuang.clipline.ocr", qos: .utility)
-    /// 图片识别（测试里换成可控的桩）。
-    var recognizeImage: (Data) -> String? = { Ocr.recognize($0) }
+    /// 图片识别（测试里换成可控的桩）。nil = 引擎失败；空串 = 识别过但没文字。
+    var recognizeImage: (Data) -> String? = { data in
+        switch Ocr.outcome(data) {
+        case .text(let text): return text
+        case .empty: return ""
+        case .failed: return nil
+        }
+    }
     private var scrollSerial = 0
 
     init(archive: ClipArchive?, note: String = "memory only", retention: Retention = .standard) {
@@ -598,7 +604,7 @@ final class ClipStore: ObservableObject {
         let io = io
         let recognize = recognizeImage
         ocrQueue.async { [weak self] in
-            let text = recognize(imageData) ?? ""
+            guard let text = recognize(imageData) else { return }   // 引擎失败：不落「无文字」标记，下次启动重试
             io.async {
                 do { try archive.setOcr(id: id, text: text) } catch {
                     Self.log("store: ocr write failed: \(error)")

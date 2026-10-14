@@ -1,5 +1,6 @@
 import AppKit
 import ScreenCaptureKit
+import Vision
 
 /// 屏幕取字（交互照 Shottr）：按热键的一刻把各块屏定格，遮罩铺上定格画面（不压暗），
 /// 截图式准星框选；松手即裁定格画面跑本机 OCR，文字进剪贴板与历史，顶部弹确认卡。
@@ -168,37 +169,121 @@ final class ScreenTextCapture {
         (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? CGMainDisplayID()
     }
 
-    /// 静默体检（CLIPLINE_OCR_RUN_DEBUG=preflight）：逐屏抓一帧，报告尺寸链与整图试识别结果。
-    /// 只记录数量与长度，不落屏上内容。
+    /// 静默体检（CLIPLINE_OCR_RUN_DEBUG=preflight）：抓屏尺寸链 + 手选区域（裁剪）识别路径 + 窗口检查。
+    /// 只记录数量与长度，不落屏上内容（诊断图仅存 /tmp，当场查看后手动删）。
     static func probe() async -> String {
         var lines: [String] = []
+        var shots: [(screen: NSScreen, image: CGImage)] = []
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
             for screen in NSScreen.screens {
                 guard let display = content.displays.first(where: { $0.displayID == displayID(screen) }) else {
-                    lines.append("screen=\(Int(screen.frame.width))x\(Int(screen.frame.height))pt scale=\(screen.backingScaleFactor)：SCDisplay 未找到")
+                    lines.append("screen=\(Int(screen.frame.width))x\(Int(screen.frame.height))pt：SCDisplay 未找到")
                     continue
                 }
                 let mode = CGDisplayCopyDisplayMode(display.displayID)
                 lines.append("screen=\(Int(screen.frame.width))x\(Int(screen.frame.height))pt scale=\(screen.backingScaleFactor) SCDisplay=\(display.width)x\(display.height) modePixels=\(mode?.pixelWidth ?? 0)x\(mode?.pixelHeight ?? 0)")
-                do {
-                    let config = SCStreamConfiguration()
-                    config.width = mode?.pixelWidth ?? display.width
-                    config.height = mode?.pixelHeight ?? display.height
-                    config.showsCursor = false
-                    config.captureResolution = .best
-                    let image = try await SCScreenshotManager.captureImage(
-                        contentFilter: SCContentFilter(display: display, excludingWindows: []), configuration: config)
-                    let imageScale = Double(image.width) / Double(max(screen.frame.width, 1))
-                    lines.append("  captured=\(image.width)x\(image.height)（等效 scale=\(String(format: "%.2f", imageScale))）")
-                    let text = Ocr.recognize(image, minimumTextHeightPixels: 6 * CGFloat(imageScale))
-                    lines.append("  fullOCR chars=\(text?.count ?? -1) thr=\(String(format: "%.1f", 6 * imageScale))px")
-                } catch {
-                    lines.append("  抓屏失败：\(error)")
-                }
+                let config = SCStreamConfiguration()
+                config.width = mode?.pixelWidth ?? display.width
+                config.height = mode?.pixelHeight ?? display.height
+                config.showsCursor = false
+                config.captureResolution = .best
+                let image = try await SCScreenshotManager.captureImage(
+                    contentFilter: SCContentFilter(display: display, excludingWindows: []), configuration: config)
+                let imageScale = Double(image.width) / Double(max(screen.frame.width, 1))
+                lines.append("  captured=\(image.width)x\(image.height)（等效 scale=\(String(format: "%.2f", imageScale))）")
+                shots.append((screen, image))
             }
         } catch {
             lines.append("freeze 失败：\(error)")
+        }
+
+        // 识别诊断：抛错还是零观察
+        func diag(_ image: CGImage, _ minH: CGFloat) -> String {
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            request.recognitionLanguages = Settings.shared.ocrLanguages
+            request.usesLanguageCorrection = true
+            request.minimumTextHeight = Float(minH / CGFloat(max(image.height, 1)))
+            if let latest = VNRecognizeTextRequest.supportedRevisions.max() { request.revision = latest }
+            do { try VNImageRequestHandler(cgImage: image, options: [:]).perform([request]) }
+            catch { return "perform 抛错: \(error)" }
+            return "观察数\(request.results?.count ?? -2)"
+        }
+        func diagDefault(_ image: CGImage, _ minH: CGFloat) -> String {
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            request.recognitionLanguages = Settings.shared.ocrLanguages
+            request.usesLanguageCorrection = true
+            request.minimumTextHeight = Float(minH / CGFloat(max(image.height, 1)))
+            do { try VNImageRequestHandler(cgImage: image, options: [:]).perform([request]) }
+            catch { return "抛错: \(error)" }
+            return "观察数\(request.results?.count ?? -2)"
+        }
+        func bgDiag(_ image: CGImage, _ minH: CGFloat) async -> String {
+            await withCheckedContinuation { cont in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    cont.resume(returning: diagDefault(image, minH))
+                }
+            }
+        }
+        func savePNG(_ img: CGImage, _ path: String) {
+            if let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: path) as CFURL, "public.png" as CFString, 1, nil) {
+                CGImageDestinationAddImage(dest, img, nil)
+                CGImageDestinationFinalize(dest)
+            }
+        }
+
+        // ① 手选区域（裁剪）识别——放在最前，确保是本进程第一次 Vision 调用。
+        let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let winList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        func winArea(_ w: [String: Any]) -> Double {
+            guard let b = w[kCGWindowBounds as String] as? [String: Any],
+                  let r = CGRect(dictionaryRepresentation: b as CFDictionary) else { return 0 }
+            return Double(r.width * r.height)
+        }
+        let layer0 = winList.filter {
+            ($0[kCGWindowLayer as String] as? Int) == 0
+                && ($0[kCGWindowOwnerPID as String] as? pid_t) != getpid()
+                && winArea($0) >= 200 * 200
+        }
+        if let win = layer0.first(where: { ($0[kCGWindowOwnerName as String] as? String) == "Claude" })
+            ?? layer0.filter { ($0[kCGWindowOwnerPID as String] as? pid_t) == frontPID }.max(by: { winArea($0) < winArea($1) }),
+           let boundsDict = win[kCGWindowBounds as String] as? [String: Any],
+           let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary) {
+            let owner = win[kCGWindowOwnerName as String] as? String ?? "?"
+            let sharing = win[kCGWindowSharingState as String] as? Int ?? -1
+            lines.append("window owner=\(owner) size=\(bounds.width)x\(bounds.height) sharingState=\(sharing)（0=禁止抓取）")
+            for (screen, image) in shots {
+                let db = CGDisplayBounds(displayID(screen))
+                let rel = CGRect(x: bounds.minX - db.minX, y: bounds.minY - db.minY,
+                                 width: bounds.width, height: bounds.height)
+                guard rel.minX >= -1, rel.minY >= -1, rel.maxX <= db.width + 1, rel.maxY <= db.height + 1 else { continue }
+                let viewRect = NSRect(x: rel.minX, y: db.height - rel.maxY, width: rel.width, height: rel.height)
+                let imageScale = CGFloat(image.width) / max(screen.frame.width, 1)
+                let pr = SelectionGeometry.pixelRect(for: viewRect, viewSize: screen.frame.size,
+                                                     imageSize: CGSize(width: image.width, height: image.height))
+                guard !pr.isNull, let crop = image.cropping(to: pr) else {
+                    lines.append("  cropRepro: 裁剪失败 \(pr)")
+                    break
+                }
+                let thr = 6 * imageScale
+                let first = Ocr.recognize(crop, minimumTextHeightPixels: thr)
+                lines.append("  cropFirstOCR=\(crop.width)x\(crop.height) chars=\(first?.count ?? -1)（本进程第一次调用）")
+                lines.append("  diag2 钉revision: \(diag(crop, thr)) | 默认revision: \(diagDefault(crop, thr)) | 后台队列: \(await bgDiag(crop, thr))")
+                let fullAfter = Ocr.recognize(image, minimumTextHeightPixels: thr)
+                lines.append("  fullAfterCrop chars=\(fullAfter?.count ?? -1)（第二次调用，同一张整屏图）")
+                savePNG(crop, "/tmp/clipline-probe-crop.png")
+                savePNG(image, "/tmp/clipline-probe-full.png")
+                break
+            }
+        }
+
+        // ② 各屏整图识别（后续调用）
+        for (screen, image) in shots {
+            let imageScale = CGFloat(image.width) / max(screen.frame.width, 1)
+            let text = Ocr.recognize(image, minimumTextHeightPixels: 6 * imageScale)
+            lines.append("  fullOCR chars=\(text?.count ?? -1)（\(diag(image, 6 * imageScale))）")
         }
         return lines.joined(separator: "\n") + "\n"
     }
@@ -356,16 +441,21 @@ final class ScreenTextCapture {
         }
         let scale = CGFloat(image.width) / max(screen.frame.width, 1)   // 实际成图比例（抓的是原生像素，= 2）
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let text = Ocr.recognize(crop, minimumTextHeightPixels: 6 * scale)
+            let result = Ocr.outcome(crop, minimumTextHeightPixels: 6 * scale)
             DispatchQueue.main.async {
                 done = true
                 guard let self, self.generation == token else { return }
-                Self.debug(String(format: "ocr: %.0fms，%d 字", (CACurrentMediaTime() - started) * 1000, text?.count ?? 0))
-                if let text, !text.isEmpty {
+                switch result {
+                case .text(let text):
+                    Self.debug(String(format: "ocr: %.0fms，%d 字", (CACurrentMediaTime() - started) * 1000, text.count))
                     self.deliver(text, replacing: nil)
                     self.present(.copied(text), on: screen)
-                } else {
+                case .empty:
+                    Self.debug(String(format: "ocr: %.0fms，无文字", (CACurrentMediaTime() - started) * 1000))
                     self.present(.empty, on: screen)
+                case .failed:
+                    Self.debug(String(format: "ocr: %.0fms，引擎失败", (CACurrentMediaTime() - started) * 1000))
+                    self.present(.engineBusy, on: screen)
                 }
             }
         }

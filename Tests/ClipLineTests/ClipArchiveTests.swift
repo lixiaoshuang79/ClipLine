@@ -171,7 +171,7 @@ final class ClipArchiveTests: XCTestCase {
         let gate = DispatchSemaphore(value: 0)
         store.recognizeImage = { _ in
             gate.wait()   // 模拟一张识别很慢的图
-            return nil
+            return ""     // 识别过、没有文字（空串即标记；nil 现在表示引擎失败）
         }
         let image = try XCTUnwrap(ClipItem.make(snapshot: [[.png: Self.png(width: 8, height: 8)]], source: .unknown))
         store.ingest(image)
@@ -195,6 +195,21 @@ final class ClipArchiveTests: XCTestCase {
             if ocrText == nil { Thread.sleep(forTimeInterval: 0.01) }
         }
         XCTAssertEqual(ocrText, "")
+        reader.close()
+        store.close()
+    }
+
+    func testOcrEngineFailureDoesNotWriteEmptyMarker() throws {
+        // 引擎失败（nil）时不写「无文字」标记，留待下次启动重试（区别于「识别过、确实没字」的空串标记）。
+        let archive = try ClipArchive(directory: directory)
+        let store = ClipStore(archive: archive)
+        store.recognizeImage = { _ in nil }
+        let image = try XCTUnwrap(ClipItem.make(snapshot: [[.png: Self.png(width: 8, height: 8)]], source: .unknown))
+        store.ingest(image)
+        Thread.sleep(forTimeInterval: 0.3)
+        store.flush()
+        let reader = try ClipArchive(directory: directory)
+        XCTAssertNil(try reader.loadRecords().first?.ocrText, "失败不落标记")
         reader.close()
         store.close()
     }

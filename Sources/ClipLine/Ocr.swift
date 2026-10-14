@@ -10,36 +10,64 @@ enum Ocr {
     /// 识别一张 CGImage；没有文字或识别失败时返回 nil。CPU 密集，调用方放到后台队列。
     /// - Parameter minimumTextHeightPixels: 最小文字高度（像素）。屏幕抓图按显示缩放传 6×scale（对齐 Shottr，
     ///   2x 屏即 12px，滤掉半视力的噪点级小字）；其他来源维持 6 的旧行为。
+    enum Outcome { case text(String), empty, failed }
+
     static func recognize(_ image: CGImage, minimumTextHeightPixels: CGFloat = 6) -> String? {
-        let settings = Settings.shared
+        if case .text(let text) = outcome(image, minimumTextHeightPixels: minimumTextHeightPixels) { return text }
+        return nil
+    }
+
+    /// 带失败区分与重试的识别：perform 抛错（如 ANE/e5rt 资源类错误）时等一拍重试一次；
+    /// 仍失败返回 .failed——调用方要把它和「真的没有文字」(.empty) 分开呈现。
+    /// 没有文字或识别失败时返回 nil。
+    /// - Parameter minimumTextHeightPixels: 最小文字高度（像素）。屏幕抓图按显示缩放传 6×scale（对齐 Shottr，
+    ///   2x 屏即 12px，滤掉半视力噪点级小字）；其他来源维持 6 的旧行为。
+    static func outcome(_ image: CGImage, minimumTextHeightPixels: CGFloat = 6) -> Outcome {
+        for attempt in 0...1 {
+            if attempt > 0 { Thread.sleep(forTimeInterval: 0.8) }
+            let request = makeRequest(minimumTextHeightPixels: minimumTextHeightPixels,
+                                      imageHeight: CGFloat(image.height))
+            do {
+                try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+            } catch {
+                continue
+            }
+            let raw = (request.results ?? [])
+                .compactMap { $0.topCandidates(1).first?.string }
+                .joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !raw.isEmpty else { return .empty }
+            let text = Settings.shared.ocrRemoveBreaks ? removeBreaks(raw) : raw
+            return .text(String(text.prefix(maxCharacters)))
+        }
+        return .failed
+    }
+
+    /// 组一个识别请求（钉 revision 保持跨系统版本稳定；minimumTextHeight 是相对图高的比例）。
+    static func makeRequest(minimumTextHeightPixels: CGFloat, imageHeight: CGFloat,
+                            pinRevision: Bool = true) -> VNRecognizeTextRequest {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
-        request.recognitionLanguages = settings.ocrLanguages
+        request.recognitionLanguages = Settings.shared.ocrLanguages
         request.usesLanguageCorrection = true
-        request.minimumTextHeight = Float(minimumTextHeightPixels / CGFloat(max(image.height, 1)))
-        // 显式钉住 revision：跨系统版本结果稳定（Shottr 用 currentRevision，这里取等价的受支持最高版）。
-        if let latest = VNRecognizeTextRequest.supportedRevisions.max() {
+        request.minimumTextHeight = Float(minimumTextHeightPixels / max(imageHeight, 1))
+        if pinRevision, let latest = VNRecognizeTextRequest.supportedRevisions.max() {
             request.revision = latest
         }
-        do {
-            try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
-        } catch {
-            return nil
-        }
-        let raw = (request.results ?? [])
-            .compactMap { $0.topCandidates(1).first?.string }
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else { return nil }
-        let text = settings.ocrRemoveBreaks ? removeBreaks(raw) : raw
-        return String(text.prefix(maxCharacters))
+        return request
     }
 
     /// 便捷入口：直接从图片数据识别。
     static func recognize(_ data: Data) -> String? {
+        if case .text(let text) = outcome(data) { return text }
+        return nil
+    }
+
+    /// 数据版三态识别（解码失败也算 .failed）。
+    static func outcome(_ data: Data) -> Outcome {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
-        return recognize(image)
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return .failed }
+        return outcome(image)
     }
 
     /// 预热：启动后在后台跑一次最小识别，把 Vision 的语言模型加载好——首次取字不再等好几秒。
