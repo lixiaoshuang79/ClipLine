@@ -326,6 +326,8 @@ struct PastePanelView: View {
                 .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
+        // borderlessButton 默认会在 label 右侧再画一个指示箭头，22pt 的小框里会和省略号挤在一起。
+        .menuIndicator(.hidden)
         .frame(width: 22, height: 22)
         .help("更多")
     }
