@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 CONFIG="${1:-release}"
 TRIPLE="arm64-apple-macosx14.0"
 APP="build/ClipLine.app"
-VERSION="1.3.0"
+VERSION="1.3.1"
 
 # CLT 自带的 macOS 27 SDK 缺 SwiftUI 需要的宏插件；失败时回退到旁边的 macOS 26 SDK。
 if [ -z "${SDKROOT:-}" ] && ! swift build -c "$CONFIG" --triple "$TRIPLE"; then
