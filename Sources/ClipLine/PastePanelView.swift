@@ -118,6 +118,13 @@ struct PastePanelView: View {
         .onReceive(NotificationCenter.default.publisher(for: .clipLineCreateBoard)) { _ in
             creatingBoard = true   // ⇧⌘N：与 Paste 的「创建 Pinboard」对齐
         }
+        .onChange(of: store.revealed) { _, shown in
+            // 收起面板：行内输入（新建/重命名标签）一律放弃，避免下次展开时输入框还挂在上面。
+            if !shown {
+                creatingBoard = false
+                renamingBoard = nil
+            }
+        }
         .onChange(of: store.fieldHasText) { _, typing in
             withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
                 searchExpanded = typing
@@ -143,29 +150,33 @@ struct PastePanelView: View {
     /// 标签多或名字长时整条横向可滚；内容不超宽时仍整组居中。
     private var toolbar: some View {
         HStack(spacing: 0) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 14) {
-                    searchCluster
-                    historyTab
-                    ForEach(store.boards) { board in
-                        boardTab(board)
+            // 水平 ScrollView 不会把视口宽度传给内容，"内容不超宽时居中"要靠 GeometryReader 量出
+            // 视口、给内容一个 minWidth——否则内容会贴左边（v1.3.0 的回归）。
+            GeometryReader { geo in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 14) {
+                        searchCluster
+                        historyTab
+                        ForEach(store.boards) { board in
+                            boardTab(board)
+                        }
+                        if creatingBoard {
+                            InlineTextField(initial: "未命名",
+                                            onCommit: { name in
+                                                creatingBoard = false
+                                                store.addBoard(name: name)
+                                            },
+                                            onCancel: { creatingBoard = false })
+                                .frame(width: 110, height: 20)
+                        }
+                        plusButton
                     }
-                    if creatingBoard {
-                        InlineTextField(initial: "未命名",
-                                        onCommit: { name in
-                                            creatingBoard = false
-                                            store.addBoard(name: name)
-                                        },
-                                        onCancel: { creatingBoard = false })
-                            .frame(width: 110, height: 20)
-                    }
-                    plusButton
+                    .padding(.horizontal, 12)
+                    .frame(minWidth: geo.size.width, alignment: .center)
                 }
-                .padding(.horizontal, 12)
-                .frame(maxWidth: .infinity)   // 比视口窄时撑满，交给外层居中
+                // 顶栏空白处点击仍然收起面板（ScrollView 会把空白处的点击吃掉，用底垫补回来）。
+                .background(Color.clear.contentShape(Rectangle()).onTapGesture { store.onRequestTuck?() })
             }
-            // 顶栏空白处点击仍然收起面板（ScrollView 会把空白处的点击吃掉，用底垫补回来）。
-            .background(Color.clear.contentShape(Rectangle()).onTapGesture { store.onRequestTuck?() })
             overflowMenu
                 .padding(.trailing, 16)
         }
@@ -175,10 +186,18 @@ struct PastePanelView: View {
     /// 搜索：常态只露放大镜（Paste 实拍）；击键仍进隐藏 NSTextField；有字时向右展开输入区。
     private var searchCluster: some View {
         HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(scheme == .dark ? Color.white.opacity(0.85) : Color.primary.opacity(0.75))
-                .frame(width: 18, height: 18)
+            Button {
+                withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) { searchExpanded = true }
+            } label: {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(scheme == .dark ? Color.white.opacity(0.85) : Color.primary.opacity(0.75))
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .focusable(false)
+            .help("搜索：点击展开，或直接打字")
             SearchField(store: store, ink: .primary, placeholder: .secondary, placeholderText: "")
                 .frame(width: searchExpanded ? 132 : 1, height: 18)
                 .opacity(searchExpanded ? 1 : 0.02)
@@ -194,8 +213,10 @@ struct PastePanelView: View {
                 .transition(.opacity)
             }
         }
-        // 点搜索区不穿透到 tuck。
-        .background(Color.clear.contentShape(Rectangle()).onTapGesture {})
+        // 点搜索区不穿透到 tuck；点空白也顺手展开搜索。
+        .background(Color.clear.contentShape(Rectangle()).onTapGesture {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) { searchExpanded = true }
+        })
     }
 
     private var historyTab: some View {
@@ -777,7 +798,7 @@ private struct InlineTextField: NSViewRepresentable {
 
         func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
             switch selector {
-            case #selector(NSResponder.insertNewline(_:)):
+            case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertTab(_:)):
                 settle(control.stringValue)
                 return true
             case #selector(NSResponder.cancelOperation(_:)):
@@ -789,8 +810,9 @@ private struct InlineTextField: NSViewRepresentable {
         }
 
         func controlTextDidEndEditing(_ notification: Notification) {
-            guard let field = notification.object as? NSTextField else { return }
-            settle(field.stringValue)
+            // 回车/制表已在 doCommandBy 里落定过；其余任何失焦（点别处、收起面板）都按「放弃」处理——
+            // 避免默认「未命名」被顺手创建出来。
+            cancel()
         }
 
         private func settle(_ text: String) {

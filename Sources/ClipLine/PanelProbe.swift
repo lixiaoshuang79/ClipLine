@@ -112,6 +112,23 @@ final class PanelProbe {
                 note("全部视图: SKIP（底部面板或没有标签）")
             }
 
+            // 8) 行内输入框的收笔（Paste 式）：⇧⌘N 进入新建态 → 点别处 → 之后的输入应进搜索框
+            if isBottom {
+                reveal()   // 第 6 步末尾已收起，先唤出再操作
+                await sleep(0.6)
+                NotificationCenter.default.post(name: .clipLineCreateBoard, object: nil)
+                await sleep(0.4)
+                click(board, atCardIndex: 0)   // 点一张卡（等价于点到行内框之外）
+                await sleep(0.4)
+                postKey(6, to: panel(), characters: "z")   // 键入 z
+                await sleep(0.4)
+                note("行内输入收笔: \(store.query == "z" ? "OK" : "FAIL")（query=\"\(store.query)\"，期望 z）")
+                store.replaceQuery("")
+                await sleep(0.2)
+            } else {
+                note("行内输入收笔: SKIP（绳式）")
+            }
+
             finish()
         }
     }
@@ -139,14 +156,14 @@ final class PanelProbe {
         }
     }
 
-    private func postKey(_ keyCode: UInt16, to board: ClipPanel?) {
+    private func postKey(_ keyCode: UInt16, to board: ClipPanel?, characters: String = "") {
         guard let board else { return }
         for isDown in [true, false] {
             guard let event = NSEvent.keyEvent(
                 with: isDown ? .keyDown : .keyUp, location: .zero, modifierFlags: [],
                 timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: board.windowNumber,
-                context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false,
-                keyCode: keyCode) else { continue }
+                context: nil, characters: characters, charactersIgnoringModifiers: characters,
+                isARepeat: false, keyCode: keyCode) else { continue }
             NSApp.postEvent(event, atStart: false)
         }
     }

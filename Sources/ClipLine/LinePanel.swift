@@ -61,10 +61,27 @@ class ClipPanel: NSPanel {
         }
     }
 
-    /// 点过卡片之类的地方后，焦点回到搜索框。
+    /// 点过卡片之类的地方后，焦点回到搜索框；行内输入框（新建/重命名标签）之外的点击会先结束它的编辑。
     override func sendEvent(_ event: NSEvent) {
         super.sendEvent(event)
-        if event.type == .leftMouseUp, isVisible, isKeyWindow { focusSearch() }
+        if event.type == .leftMouseUp, isVisible, isKeyWindow {
+            endInlineEditingIfClickedOutside(event)
+            focusSearch()
+        }
+    }
+
+    /// SwiftUI 的按钮不抢第一响应者：行内输入框编辑中点到别处，编辑不会自己结束（输入框一直挂在那）。
+    /// 这里在鼠标松开时检查——点击落在行内输入框之外就主动收笔（其 endEditing 语义为「放弃」）。
+    private func endInlineEditingIfClickedOutside(_ event: NSEvent) {
+        guard let editor = firstResponder as? NSTextView, editor.isFieldEditor,
+              let field = editor.delegate as? NSTextField, field !== searchField else { return }
+        let point = field.convert(event.locationInWindow, from: nil)
+        guard !field.bounds.contains(point) else { return }
+        if let searchField {
+            makeFirstResponder(searchField)
+        } else {
+            makeFirstResponder(nil)
+        }
     }
 
     /// 没有主菜单的 accessory App 收不到编辑快捷键，这里直接转给搜索框的字段编辑器。
