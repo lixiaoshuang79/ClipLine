@@ -454,7 +454,8 @@ final class ScreenTextCapture {
                     Self.debug(String(format: "ocr: %.0fms，无文字", (CACurrentMediaTime() - started) * 1000))
                     self.present(.empty, on: screen)
                 case .failed:
-                    Self.debug(String(format: "ocr: %.0fms，引擎失败", (CACurrentMediaTime() - started) * 1000))
+                    Self.debug(String(format: "ocr: %.0fms，引擎失败：%@", (CACurrentMediaTime() - started) * 1000,
+                                      Ocr.lastErrorDescription ?? "（冷却中或未知）"))
                     self.present(.engineBusy, on: screen)
                 }
             }

@@ -12,6 +12,31 @@ enum Ocr {
     ///   2x 屏即 12px，滤掉半视力的噪点级小字）；其他来源维持 6 的旧行为。
     enum Outcome { case text(String), empty, failed }
 
+    /// 最近一次失败的详情（诊断日志用）。
+    private(set) static var lastErrorDescription: String?
+    /// 引擎"熔断"：失败后短暂停用识别——失败尝试本身也要占用 ANE 资源，连环重试只会让状态更糟。
+    private static var cooldownUntil = Date.distantPast
+    private static var consecutiveFailures = 0
+    private static let stateLock = NSLock()
+
+    /// 是否在熔断冷却中（冷却期内直接判失败，不再喂引擎）。
+    static var inCooldown: Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return Date() < cooldownUntil
+    }
+
+    private static func noteSuccess() {
+        stateLock.lock(); defer { stateLock.unlock() }
+        consecutiveFailures = 0
+        cooldownUntil = .distantPast
+    }
+
+    private static func noteFailure() {
+        stateLock.lock(); defer { stateLock.unlock() }
+        consecutiveFailures += 1
+        cooldownUntil = Date().addingTimeInterval(consecutiveFailures >= 3 ? 300 : 60)
+    }
+
     static func recognize(_ image: CGImage, minimumTextHeightPixels: CGFloat = 6) -> String? {
         if case .text(let text) = outcome(image, minimumTextHeightPixels: minimumTextHeightPixels) { return text }
         return nil
@@ -23,32 +48,48 @@ enum Ocr {
     /// - Parameter minimumTextHeightPixels: 最小文字高度（像素）。屏幕抓图按显示缩放传 6×scale（对齐 Shottr，
     ///   2x 屏即 12px，滤掉半视力噪点级小字）；其他来源维持 6 的旧行为。
     static func outcome(_ image: CGImage, minimumTextHeightPixels: CGFloat = 6) -> Outcome {
-        for attempt in 0...1 {
-            if attempt > 0 { Thread.sleep(forTimeInterval: 0.8) }
+        if inCooldown { return .failed }
+        var lastError: Error?
+        let attempts = languageAttempts()
+        for (index, languages) in attempts.enumerated() {
+            if index > 0 { Thread.sleep(forTimeInterval: 0.8) }
             let request = makeRequest(minimumTextHeightPixels: minimumTextHeightPixels,
-                                      imageHeight: CGFloat(image.height))
+                                      imageHeight: CGFloat(image.height), languages: languages)
             do {
                 try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
             } catch {
+                lastError = error
                 continue
             }
             let raw = (request.results ?? [])
                 .compactMap { $0.topCandidates(1).first?.string }
                 .joined(separator: "\n")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            noteSuccess()
             guard !raw.isEmpty else { return .empty }
             let text = Settings.shared.ocrRemoveBreaks ? removeBreaks(raw) : raw
             return .text(String(text.prefix(maxCharacters)))
         }
+        lastErrorDescription = lastError.map { String(describing: $0) }
+        noteFailure()
         return .failed
+    }
+
+    /// 重试时依次尝试的语言集：用户设置 → 纯中文路径（不同的模型选择在引擎部分故障时可绕行）。
+    private static func languageAttempts() -> [[String]] {
+        let settings = Settings.shared.ocrLanguages
+        var attempts = [settings]
+        if settings != ["zh-Hans"] { attempts.append(["zh-Hans"]) }
+        if settings != ["en-US"], attempts.count < 2 { attempts.append(["en-US"]) }
+        return attempts.prefix(2).map { $0 }
     }
 
     /// 组一个识别请求（钉 revision 保持跨系统版本稳定；minimumTextHeight 是相对图高的比例）。
     static func makeRequest(minimumTextHeightPixels: CGFloat, imageHeight: CGFloat,
-                            pinRevision: Bool = true) -> VNRecognizeTextRequest {
+                            languages: [String]? = nil, pinRevision: Bool = true) -> VNRecognizeTextRequest {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
-        request.recognitionLanguages = Settings.shared.ocrLanguages
+        request.recognitionLanguages = languages ?? Settings.shared.ocrLanguages
         request.usesLanguageCorrection = true
         request.minimumTextHeight = Float(minimumTextHeightPixels / max(imageHeight, 1))
         if pinRevision, let latest = VNRecognizeTextRequest.supportedRevisions.max() {
