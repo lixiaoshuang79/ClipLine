@@ -14,12 +14,15 @@ enum Ocr {
 
     /// 最近一次失败的详情（诊断日志用）。
     private(set) static var lastErrorDescription: String?
-    /// 引擎"熔断"：失败后短暂停用识别——失败尝试本身也要占用 ANE 资源，连环重试只会让状态更糟。
+    /// 测试注入点：替换独立进程识别（nil = 用真实的 OcrHelperClient）。
+    static var helperRecognizer: ((CGImage, CGFloat, [String]) -> String?)?
+    /// 主进程引擎"熔断"：失败后短暂停用主进程识别、改走独立进程——失败尝试本身也要占用
+    /// ANE 资源，连环重试只会让状态更糟。
     private static var cooldownUntil = Date.distantPast
     private static var consecutiveFailures = 0
     private static let stateLock = NSLock()
 
-    /// 是否在熔断冷却中（冷却期内直接判失败，不再喂引擎）。
+    /// 主进程引擎是否在冷却中（冷却期内不再喂它，识别交给独立进程）。
     static var inCooldown: Bool {
         stateLock.lock(); defer { stateLock.unlock() }
         return Date() < cooldownUntil
@@ -42,13 +45,44 @@ enum Ocr {
         return nil
     }
 
-    /// 带失败区分与重试的识别：perform 抛错（如 ANE/e5rt 资源类错误）时等一拍重试一次；
-    /// 仍失败返回 .failed——调用方要把它和「真的没有文字」(.empty) 分开呈现。
-    /// 没有文字或识别失败时返回 nil。
+    /// 三态识别：先走主进程 Vision；主进程引擎失效（e5rt 这类 ANE 错误）时自动转到
+    /// 随 App 打包的独立进程——那个进程的 ANE 会话是新的，识别能继续。
+    /// 调用方要把 .failed 和「真的没有文字」(.empty) 分开呈现。
     /// - Parameter minimumTextHeightPixels: 最小文字高度（像素）。屏幕抓图按显示缩放传 6×scale（对齐 Shottr，
     ///   2x 屏即 12px，滤掉半视力噪点级小字）；其他来源维持 6 的旧行为。
     static func outcome(_ image: CGImage, minimumTextHeightPixels: CGFloat = 6) -> Outcome {
-        if inCooldown { return .failed }
+        let environment = ProcessInfo.processInfo.environment
+        let forceHelper = environment["CLIPLINE_OCR_FORCE_HELPER"] == "1"
+        let forceInProcessFailure = environment["CLIPLINE_OCR_FORCE_FAIL"] == "1"
+
+        if !forceHelper, !forceInProcessFailure, !inCooldown {
+            switch inProcess(image, minimumTextHeightPixels: minimumTextHeightPixels) {
+            case .text(let text)?:
+                noteSuccess()
+                return .text(text)
+            case .empty?:
+                noteSuccess()
+                return .empty
+            case .failed?, nil:
+                noteFailure()
+            }
+        }
+
+        if let text = helperText(image, minimumTextHeightPixels: minimumTextHeightPixels) {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return .empty }
+            let result = Settings.shared.ocrRemoveBreaks ? removeBreaks(trimmed) : trimmed
+            return .text(String(result.prefix(maxCharacters)))
+        }
+        if helperRecognizer == nil, let helperError = OcrHelperClient.shared.lastError {
+            lastErrorDescription = "独立进程：\(helperError)（主进程：\(lastErrorDescription ?? "无")）"
+        }
+        noteFailure()
+        return .failed
+    }
+
+    /// 主进程内的识别。.failed 表示引擎抛错，调用方据此切到独立进程。
+    private static func inProcess(_ image: CGImage, minimumTextHeightPixels: CGFloat) -> Outcome? {
         var lastError: Error?
         let attempts = languageAttempts()
         for (index, languages) in attempts.enumerated() {
@@ -65,14 +99,20 @@ enum Ocr {
                 .compactMap { $0.topCandidates(1).first?.string }
                 .joined(separator: "\n")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            noteSuccess()
             guard !raw.isEmpty else { return .empty }
             let text = Settings.shared.ocrRemoveBreaks ? removeBreaks(raw) : raw
             return .text(String(text.prefix(maxCharacters)))
         }
         lastErrorDescription = lastError.map { String(describing: $0) }
-        noteFailure()
         return .failed
+    }
+
+    /// 独立进程识别：图片编码成 PNG 交给 helper，原文返回（去换行在外层统一处理）。
+    private static func helperText(_ image: CGImage, minimumTextHeightPixels: CGFloat) -> String? {
+        let languages = Settings.shared.ocrLanguages
+        if let helperRecognizer { return helperRecognizer(image, minimumTextHeightPixels, languages) }
+        return OcrHelperClient.shared.recognize(image, minimumTextHeightPixels: minimumTextHeightPixels,
+                                                languages: languages)
     }
 
     /// 重试时依次尝试的语言集：用户设置 → 纯中文路径（不同的模型选择在引擎部分故障时可绕行）。

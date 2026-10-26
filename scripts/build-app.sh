@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 CONFIG="${1:-release}"
 TRIPLE="arm64-apple-macosx14.0"
 APP="build/ClipLine.app"
-VERSION="1.3.3"
+VERSION="1.3.4"
 
 # CLT 自带的 macOS 27 SDK 缺 SwiftUI 需要的宏插件；失败时回退到旁边的 macOS 26 SDK。
 if [ -z "${SDKROOT:-}" ] && ! swift build -c "$CONFIG" --triple "$TRIPLE"; then
@@ -21,11 +21,15 @@ if [ -z "${SDKROOT:-}" ] && ! swift build -c "$CONFIG" --triple "$TRIPLE"; then
   swift build -c "$CONFIG" --triple "$TRIPLE"
 fi
 
-BIN="$(swift build -c "$CONFIG" --triple "$TRIPLE" --show-bin-path)/ClipLine"
+BIN_DIR="$(swift build -c "$CONFIG" --triple "$TRIPLE" --show-bin-path)"
+BIN="$BIN_DIR/ClipLine"
+HELPER_BIN="$BIN_DIR/ClipLineOCRHelper"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/ClipLine"
+# 独立识别进程：主进程的 ANE 会话失效后由它接管识别（见 OcrHelper.swift）。
+cp "$HELPER_BIN" "$APP/Contents/MacOS/ClipLineOCRHelper"
 
 # 图标：脚本绘制 1024 图，再切 iconset 打成 icns
 WORK="$(mktemp -d)"
@@ -69,9 +73,11 @@ if [ -z "$IDENTITY" ] && security find-certificate -c "ClipLine Dev" "$HOME/Libr
   IDENTITY="ClipLine Dev"
 fi
 if [ -n "$IDENTITY" ]; then
+  codesign --force --sign "$IDENTITY" "$APP/Contents/MacOS/ClipLineOCRHelper" >/dev/null
   codesign --force --sign "$IDENTITY" "$APP" >/dev/null
   echo "Signed with $IDENTITY (TCC 授权跨重编译保留)"
 else
+  codesign --force --sign - "$APP/Contents/MacOS/ClipLineOCRHelper" >/dev/null
   codesign --force --sign - "$APP" >/dev/null
   echo "Signed ad hoc（无固定身份；每次重编译会丢 TCC 授权，可跑 scripts/make-signing-identity.sh）"
 fi

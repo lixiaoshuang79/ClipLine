@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     targets: [
         .executableTarget(name: "ClipLine", path: "Sources/ClipLine"),
+        .executableTarget(name: "ClipLineOCRHelper", path: "Sources/ClipLineOCRHelper"),
         .testTarget(name: "ClipLineTests", dependencies: ["ClipLine"], path: "Tests/ClipLineTests"),
     ]
 )
