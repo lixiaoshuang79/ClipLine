@@ -259,8 +259,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         tuck(immediate: true)
         guard settings.pasteAutomatically else { return }   // 只复制模式：不合成 ⌘V
-        if let previousApp,
-           NSWorkspace.shared.frontmostApplication?.processIdentifier == getpid() {
+        // 粘贴目标是唤出面板前的那个 App（非激活面板不抢前台，通常它就是当前前台）。
+        var target = NSWorkspace.shared.frontmostApplication
+        if target?.processIdentifier == getpid(), let previousApp {
+            target = previousApp
             previousApp.activate(options: [])
         }
         // 没有「辅助功能」权限时合成不了 ⌘V：第一次先说清原因（内容已在剪贴板，可手动 ⌘V），
@@ -283,7 +285,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
-        Paster.synthesizePaste()
+        Paster.synthesizePaste(targetPID: target?.processIdentifier)
     }
 
     /// 辅助功能说明弹窗每次启动只弹一次。
