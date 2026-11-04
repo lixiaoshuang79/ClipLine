@@ -85,7 +85,11 @@ struct PastePanelView: View {
                 PanelGlass(cornerRadius: Self.cornerRadius)
                 if scheme == .dark { Rectangle().fill(.black.opacity(0.22)) }
                 // 点空白收起：最底层兄弟层，避免吞掉卡片点击。
-                Color.clear.contentShape(Rectangle()).onTapGesture { store.onRequestTuck?() }
+                Color.clear.contentShape(Rectangle()).onTapGesture {
+                    DebugLog.write("tuck source=panel-backdrop")
+                    DebugLog.write("tuck source=overflow-menu")
+        store.onRequestTuck?()
+                }
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .circular))
@@ -175,7 +179,11 @@ struct PastePanelView: View {
                     .frame(minWidth: geo.size.width, alignment: .center)
                 }
                 // 顶栏空白处点击仍然收起面板（ScrollView 会把空白处的点击吃掉，用底垫补回来）。
-                .background(Color.clear.contentShape(Rectangle()).onTapGesture { store.onRequestTuck?() })
+                .background(Color.clear.contentShape(Rectangle()).onTapGesture {
+                    DebugLog.write("tuck source=toolbar-backdrop")
+                    DebugLog.write("tuck source=overflow-menu")
+        store.onRequestTuck?()
+                })
             }
             overflowMenu
                 .padding(.trailing, 16)
@@ -355,6 +363,7 @@ struct PastePanelView: View {
 
     private func addFiles() {
         // 先收起：面板在 Dock 层之上，会盖住打开面板底部的按钮；同确认框一样先激活再弹。
+        DebugLog.write("tuck source=overflow-menu")
         store.onRequestTuck?()
         NSApp.activate()
         let panel = NSOpenPanel()
@@ -454,7 +463,8 @@ private struct PasteCardView: View {
             }
         }
         .onHover { hovering = $0 }
-        .onTapGesture { store.onRequestPaste?(item) }
+        // 双击才粘贴：第一下只选中（打蓝框），同一个卡片上的第二下才粘贴。
+        .onTapGesture { store.handleTap(item) }
         .contextMenu { cardMenu }
         .id(item.id)
     }

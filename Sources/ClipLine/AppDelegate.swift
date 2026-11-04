@@ -221,12 +221,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         previousApp = (front?.processIdentifier == getpid()) ? nil : front
         // 绳式默认「全部」（含已归标签的条目，用搜索框旁的切换控件筛选）；底部面板默认剪贴板历史。
         store.defaultViewIncludesBoarded = settings.effectivePanelStyle != .paste
+        // 先收一次剪贴板再上屏：刚截的图不会因为差半拍轮询而缺席，第一张卡就是它。
+        store.syncFromPasteboard()
         let board = activePanel
         board.placeOnScreen()
         if store.selectedItem == nil { store.selectedID = store.shown.first?.id }
         store.revealed = true
         board.ignoresMouseEvents = false
         board.orderFrontRegardless()
+        store.scrollToStart()
+        DebugLog.write("reveal shown=\(store.shown.prefix(5).map { String($0.id.uuidString.prefix(6)) }.joined(separator: ","))"
+                       + " selected=\(store.selectedID.map { String($0.uuidString.prefix(6)) } ?? "-")")
         // 自截图调试时不抢键盘：否则前台 App 里正在打的字会落进搜索框。
         if ProcessInfo.processInfo.environment["CLIPLINE_SNAPSHOT"] == nil {
             board.makeKey()
@@ -237,6 +242,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func tuck(immediate: Bool = false) {
         guard store.revealed else { return }
+        DebugLog.write("tuck immediate=\(immediate)")
         store.revealed = false
         removeOutsideMonitor()
         let board = activePanel   // 记住收起哪一块：等待期间换样式也把这块收干净
@@ -246,6 +252,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             board.orderOut(nil)
             // 每次展开都从完整列表开始；等滑出后再清，免得收起途中卡片重排。
             if self.store.fieldHasText || !self.store.query.isEmpty { self.store.replaceQuery("") }
+            // 展开期间攒下的新条目现在上屏（收起后不可见，不会打扰正在点的卡）。
+            self.store.refreshAfterTuck()
         }
         orderOutWork?.cancel()
         orderOutWork = work
@@ -253,6 +261,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func pasteAndTuck(_ item: ClipItem) {
+        let index = store.shown.firstIndex { $0.id == item.id }
+        DebugLog.write("tap id=\(item.id.uuidString.prefix(8)) index=\(index ?? -1) "
+                       + "shown=\(store.shown.prefix(4).map { String($0.id.uuidString.prefix(6)) }.joined(separator: ","))")
         guard store.writeToPasteboard(item) else {
             tuck()
             return
@@ -275,7 +286,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.informativeText = """
             内容已经复制到剪贴板了，现在手动按 ⌘V 也能粘贴。
 
-            想要"点卡片就自动粘贴"：打开 系统设置 → 隐私与安全性，向下滚动找到「辅助功能」（在「录屏与系统录音」下面几行，别开错），把 ClipLine 打开，然后重启本应用。
+            想要"双击卡片就自动粘贴"：打开 系统设置 → 隐私与安全性，向下滚动找到「辅助功能」（在「录屏与系统录音」下面几行，别开错），把 ClipLine 打开，然后重启本应用。
             """
             alert.addButton(withTitle: "打开设置")
             alert.addButton(withTitle: "知道了")
@@ -293,7 +304,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func installOutsideMonitor() {
         guard outsideMonitor == nil else { return }
-        outsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+        // 自检实例不装全局监视器：探针跑在一台正在被使用的机器上，
+        // 用户在别处点鼠标会把探针面板收起来，干扰断言。
+        guard ProcessInfo.processInfo.environment["CLIPLINE_PANEL_PROBE"] != "1" else { return }
+        outsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            // 只认真正落在别的 App 上的点击。
+            guard event.window == nil else { return }
             self?.tuck()
         }
     }

@@ -55,7 +55,9 @@ final class ClipStore: ObservableObject {
     var onRequestPaste: ((ClipItem) -> Void)?
 
     /// 自己写回剪贴板后同步，避免把自己的粘贴又抓成一条新历史。
-    private var lastChangeCount = NSPasteboard.general.changeCount
+    private var lastChangeCount: Int
+    /// 生产里是系统剪贴板；测试注入私有剪贴板，不碰用户正在用的内容。
+    private let pasteboard: NSPasteboard
     /// nil = 只在内存里（演示模式或存储打不开）。
     private let archive: ClipArchive?
     private let archiveNote: String
@@ -74,10 +76,13 @@ final class ClipStore: ObservableObject {
     }
     private var scrollSerial = 0
 
-    init(archive: ClipArchive?, note: String = "memory only", retention: Retention = .standard) {
+    init(archive: ClipArchive?, note: String = "memory only", retention: Retention = .standard,
+         pasteboard: NSPasteboard = .general) {
         self.archive = archive
         archiveNote = note
         self.retention = retention
+        self.pasteboard = pasteboard
+        lastChangeCount = pasteboard.changeCount
     }
 
     var query: String { search.raw }
@@ -98,11 +103,17 @@ final class ClipStore: ObservableObject {
     }
 
     private func poll() {
-        let pb = NSPasteboard.general
+        let pb = pasteboard
         guard pb.changeCount != lastChangeCount else { return }
         lastChangeCount = pb.changeCount
         guard let item = ClipItem.capture(from: pb) else { return }
         ingest(item)
+    }
+
+    /// 唤出面板前先同步一次：轮询每 0.35s 一拍，刚截的图可能还没进列表。
+    /// 先收进来再上屏，第一张卡一定是最新复制的那条。
+    func syncFromPasteboard() {
+        poll()
     }
 
     /// 新捕获的一条：放到最前、去重、写盘（写盘后内存里只留缩略信息，快照按需从磁盘读回）。
@@ -152,7 +163,13 @@ final class ClipStore: ObservableObject {
         }
         freshIDs.insert(item.id)
         landingIDs.insert(item.id)
-        commit([item] + items.filter { $0.fingerprint != item.fingerprint })
+        // 面板开着时只入账、不上屏：卡片绝不在指针底下挪位（否则会「点 1 号位、贴出 3 号位的图」）。
+        // 收起后由 `refreshAfterTuck()` 统一刷新，下次展开就能看到。
+        if revealed {
+            DebugLog.write("ingest deferred id=\(item.id.uuidString.prefix(8)) fp=\(item.fingerprint.prefix(12))"
+                           + " shown=\(shown.prefix(3).map { String($0.id.uuidString.prefix(6)) }.joined(separator: ","))")
+        }
+        commit([item] + items.filter { $0.fingerprint != item.fingerprint }, deferDisplay: revealed)
     }
 
     func remove(_ item: ClipItem) {
@@ -282,12 +299,13 @@ final class ClipStore: ObservableObject {
 
     /// 屏幕取字：文字刚被写入剪贴板（调用方负责），这里同步 changeCount 并收进历史。
     func ingestScreenText(_ item: ClipItem) {
-        lastChangeCount = NSPasteboard.general.changeCount
+        lastChangeCount = pasteboard.changeCount
         ingest(item)
     }
 
     /// 把新的完整列表定下来：执行容量淘汰，被移走的条目同步从磁盘删除。
-    private func commit(_ next: [ClipItem]) {
+    /// `deferDisplay`：面板正开着时只更新数据、不重排屏上的卡（新条目等收起后再上屏）。
+    private func commit(_ next: [ClipItem], deferDisplay: Bool = false) {
         let evicted = retention.evictions(next.map {
             Retention.Entry(id: $0.id, bytes: $0.bytes, isImage: $0.isImage,
                             pinned: $0.pinned, boarded: !$0.boards.isEmpty)
@@ -298,8 +316,30 @@ final class ClipStore: ObservableObject {
         items = kept
         freshIDs.formIntersection(keptIDs)
         landingIDs.formIntersection(keptIDs)
-        refilter(queryChanged: false)
+        if deferDisplay {
+            // 屏上的顺序原样保留，只把已被淘汰的卡摘掉（否则粘贴时快照已随磁盘删除）。
+            let surviving = shown.filter { keptIDs.contains($0.id) }
+            if surviving.map(\.id) != shown.map(\.id) {
+                shown = surviving
+                if let selectedID, !surviving.contains(where: { $0.id == selectedID }) {
+                    self.selectedID = surviving.first?.id
+                }
+            }
+        } else {
+            refilter(queryChanged: false)
+        }
         if !doomed.isEmpty { persist { try $0.delete(ids: Array(doomed)) } }
+    }
+
+    /// 面板收起后调用：把展开期间攒下的新条目放上屏（下次展开即可见，且从最新的开始）。
+    func refreshAfterTuck() {
+        guard !revealed else { return }
+        refilter(queryChanged: false)
+    }
+
+    /// 每次唤出都回到列表开头：1 号位永远是最新复制的条目。
+    func scrollToStart() {
+        requestScroll(.start)
     }
 
     private func keepInMemory(_ record: ClipRecord) {
@@ -326,6 +366,25 @@ final class ClipStore: ObservableObject {
         if let item = selectedItem { onRequestPaste?(item) }
     }
 
+    /// 卡片点击：第一下选中，同一个卡片在系统双击间隔内的第二下才粘贴。
+    /// 不用 SwiftUI 的 double-tap 识别器——它会把单击扣到双击窗口结束才放，
+    /// 行内输入收笔/面板收起这类鼠标松开时的处理会被它搅乱。
+    private var lastTap: (id: UUID, at: Date)?
+
+    func handleTap(_ item: ClipItem) {
+        let now = Date()
+        let doubled = lastTap.map {
+            $0.id == item.id && now.timeIntervalSince($0.at) <= NSEvent.doubleClickInterval
+        } ?? false
+        lastTap = doubled ? nil : (item.id, now)
+        DebugLog.write("tap id=\(item.id.uuidString.prefix(6)) double=\(doubled) shown=\(shown.prefix(3).map { String($0.id.uuidString.prefix(6)) }.joined(separator: ","))")
+        if doubled {
+            onRequestPaste?(item)
+        } else {
+            selectedID = item.id
+        }
+    }
+
     /// Esc：先清搜索词，再看标签页，最后才收起面板。
     func escape() {
         if fieldHasText || !search.raw.isEmpty {
@@ -333,6 +392,7 @@ final class ClipStore: ObservableObject {
         } else if activeBoardID != nil {
             activeBoardID = nil
         } else {
+            DebugLog.write("tuck source=escape")
             onRequestTuck?()
         }
     }
@@ -408,9 +468,16 @@ final class ClipStore: ObservableObject {
     /// 粘贴：内存里有快照就用，否则从磁盘读回。读不到时返回 false。
     @discardableResult
     func writeToPasteboard(_ item: ClipItem) -> Bool {
-        guard let snapshot = fullSnapshot(of: item), !snapshot.isEmpty else { return false }
-        Paster.copyToPasteboard(snapshot)
-        lastChangeCount = NSPasteboard.general.changeCount
+        guard let snapshot = fullSnapshot(of: item), !snapshot.isEmpty else {
+            DebugLog.write("write FAILED id=\(item.id.uuidString.prefix(8)) fp=\(item.fingerprint.prefix(12))")
+            return false
+        }
+        Paster.copyToPasteboard(snapshot, to: pasteboard)
+        lastChangeCount = pasteboard.changeCount
+        let types = snapshot.first?.map { "\($0.key.rawValue):\($0.value.count)" }.sorted().joined(separator: ",") ?? "-"
+        let digest = (snapshot.first?[.png] ?? snapshot.first?[.tiff]).map { ClipItem.sha256($0).prefix(12) } ?? "-"
+        DebugLog.write("write id=\(item.id.uuidString.prefix(8)) fp=\(item.fingerprint.prefix(12)) "
+                       + "items=\(snapshot.count) sha=\(digest) types=[\(types)]")
         return true
     }
 
@@ -663,7 +730,7 @@ final class ClipStore: ObservableObject {
         let note = """
         这是 ClipLine 的演示：复制过的内容会挂在这根绳上。
 
-        点卡片 = 复制并粘贴回你刚才的 App；← → 选择，回车粘贴，Esc 或点空白处收起；悬停时点 × 把它摘下来，点右上角图钉把它置顶。
+        双击卡片 = 复制并粘贴回你刚才的 App（单击只选中）；← → 选择，回车粘贴，Esc 或点空白处收起；悬停时点 × 把它摘下来，点右上角图钉把它置顶。
         顶栏的 + 新建标签；右键卡片「固定到」把条目归进标签，它就不再跟着历史流转。
         """
         let snippet = """

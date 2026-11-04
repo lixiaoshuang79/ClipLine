@@ -119,7 +119,10 @@ struct LineView: View {
         ZStack(alignment: .topLeading) {
             Color.clear
                 .contentShape(Rectangle())
-                .onTapGesture { store.onRequestTuck?() }
+                .onTapGesture {
+                    DebugLog.write("tuck source=rope-backdrop")
+                    store.onRequestTuck?()
+                }
             Color.clear.frame(width: 1, height: 1).id(Self.startAnchor)
             Rope(width: width)
             if empty {

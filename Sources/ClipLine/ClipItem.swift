@@ -85,7 +85,12 @@ extension ClipItem {
     ]
 
     static func isSensitive(_ types: [NSPasteboard.PasteboardType]) -> Bool {
-        types.contains { ignoredTypes.contains($0.rawValue) || $0.rawValue.hasPrefix("dyn.") }
+        // 文件复制（访达等）常带私有/动态 UTI；文件不是凭据，放行 dyn.*，
+        // 密码管理器显式打的「勿记录」标记仍然生效。少了这一条，文件根本进不了历史。
+        if types.contains(where: { $0.rawValue == "public.file-url" || $0.rawValue == "NSFilenamesPboardType" }) {
+            return types.contains { ignoredTypes.contains($0.rawValue) }
+        }
+        return types.contains { ignoredTypes.contains($0.rawValue) || $0.rawValue.hasPrefix("dyn.") }
     }
 
     /// 类型判定顺序：文件 → 图片 → 颜色 → 链接 → 代码 → 文本（RTF 按文本处理）。

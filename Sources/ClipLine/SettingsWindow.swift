@@ -49,10 +49,10 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section("粘贴") {
-                Toggle("点卡片后自动粘贴", isOn: $settings.pasteAutomatically)
+                Toggle("双击卡片后自动粘贴", isOn: $settings.pasteAutomatically)
                 Text(settings.pasteAutomatically
                      ? "需要「辅助功能」权限；未授权时自动退回只复制。"
-                     : "关：点卡片只复制到剪贴板，自己按 ⌘V。")
+                     : "关：双击卡片只复制到剪贴板，自己按 ⌘V。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

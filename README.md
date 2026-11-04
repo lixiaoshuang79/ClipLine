@@ -17,7 +17,7 @@ Every copy becomes a card, pegged to a line under the menu bar — tinted with t
 
 ## Highlights
 
-- **The clothesline** — press `⌃⌥V` and a line drops down from under the menu bar with your recent copies hanging as cards. Click a card to paste it back into whatever app you were using; the panel never steals focus from it.
+- **The clothesline** — press `⌃⌥V` and a line drops down from under the menu bar with your recent copies hanging as cards. Double-click a card to paste it back into whatever app you were using; the panel never steals focus from it.
 - **Dyed hang-tags** — each card's header is tinted with a color extracted from the source app's icon and shows that icon, so you can tell where a clip came from at a glance. Link, code, color, image and file clips get their own card styles.
 - **Search as you type** — just start typing. Matching is case- and width-insensitive, space separates terms (all must match), and it covers text, file names, source app names — and **text inside images** via on-device OCR (Simplified Chinese + English).
 - **Private by design** — history lives in a local SQLite database. No account, no network, no analytics. Clips marked concealed/transient by password managers are never recorded or stored.
@@ -58,7 +58,7 @@ scripts/build-app.sh          # builds build/ClipLine.app
 open build/ClipLine.app
 ```
 
-Locally built apps are ad-hoc signed (the build script uses a local "ClipLine Dev" signing identity when one exists in your keychain). To paste automatically, grant Accessibility permission the first time you click a card (System Settings → Privacy & Security → Accessibility); without it, clicking a card only copies to the clipboard. `scripts/make-dmg.sh` packages a distributable DMG.
+Locally built apps are ad-hoc signed (the build script uses a local "ClipLine Dev" signing identity when one exists in your keychain). To paste automatically, grant Accessibility permission the first time you double-click a card (System Settings → Privacy & Security → Accessibility); without it, double-clicking a card only copies to the clipboard. `scripts/make-dmg.sh` packages a distributable DMG.
 
 ## Usage
 

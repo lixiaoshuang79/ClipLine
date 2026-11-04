@@ -55,11 +55,11 @@ struct PeggedView: View {
     }
 
     private var card: some View {
-        Button { store.onRequestPaste?(item) } label: {
-            CardView(item: item, hovering: hovering, showRing: showRing, pulse: pulse, sweep: sweep)
-        }
-        .buttonStyle(CardPressStyle())
-        .focusable(false)   // 方向键与回车由 LinePanel 处理，按钮不抢键盘焦点
+        CardView(item: item, hovering: hovering, showRing: showRing, pulse: pulse, sweep: sweep)
+        .contentShape(Rectangle())
+        // 双击才粘贴：第一下只选中（显示选中环），同一个卡片上的第二下才粘贴。
+        .onTapGesture { store.handleTap(item) }
+        .focusable(false)   // 方向键与回车由 LinePanel 处理，卡片不抢键盘焦点
         // 拖出去 = 分享一份副本；拖进目标 App 后，绳上这条不动。
         .onDrag {
             Dragging.provider(for: item, store: store)

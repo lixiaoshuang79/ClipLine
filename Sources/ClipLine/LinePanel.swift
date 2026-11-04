@@ -129,11 +129,18 @@ class ClipPanel: NSPanel {
             ?? NSScreen.main ?? NSScreen.screens.first
     }
 
+    /// 自检探针用：把面板放到屏幕外，避免在人正在用的屏幕上闪窗。事件仍按 windowNumber 投递，
+    /// SwiftUI 的布局与命中测试不受窗口在屏幕内外的位置影响。
+    static var offscreenForProbe: Bool {
+        ProcessInfo.processInfo.environment["CLIPLINE_PANEL_OFFSCREEN"] == "1"
+    }
+
     /// 默认（晾衣绳）：挂在指针所在的屏幕顶部。
     func placeOnScreen(_ screen: NSScreen? = nil) {
         guard let visible = (screen ?? LinePanel.screenUnderPointer())?.visibleFrame else { return }
-        let target = NSRect(x: visible.minX, y: visible.maxY - Layout.panelHeight,
+        var target = NSRect(x: visible.minX, y: visible.maxY - Layout.panelHeight,
                             width: visible.width, height: Layout.panelHeight)
+        if Self.offscreenForProbe { target.origin.y = visible.maxY + 400 }
         if frame != target { setFrame(target, display: true) }
     }
 }
@@ -166,9 +173,10 @@ final class PastePanel: ClipPanel {
     override func placeOnScreen(_ screen: NSScreen? = nil) {
         guard let target = screen ?? LinePanel.screenUnderPointer() else { return }
         let frame = target.frame
-        let rect = NSRect(x: frame.minX + PastePanelView.sideMargin, y: frame.minY,
+        var rect = NSRect(x: frame.minX + PastePanelView.sideMargin, y: frame.minY,
                           width: frame.width - PastePanelView.sideMargin * 2,
                           height: PastePanelView.panelHeight)
+        if ClipPanel.offscreenForProbe { rect.origin.y = frame.minY - PastePanelView.panelHeight - 400 }
         if self.frame != rect { setFrame(rect, display: true) }
     }
 }

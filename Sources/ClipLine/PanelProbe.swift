@@ -28,28 +28,28 @@ final class PanelProbe {
             guard let board = panel(), board.isVisible else {
                 note("FAIL: 面板没上屏"); return finish()
             }
+            let screens = NSScreen.screens.map { NSStringFromRect($0.frame) }.joined(separator: " | ")
+            note("屏幕=\(screens) 面板=\(NSStringFromRect(board.frame)) 鼠标=\(NSStringFromPoint(NSEvent.mouseLocation))")
             // 点击类断言按底部面板的版式计算；绳式骨架不同，只跑与版式无关的键盘/搜索项。
             let isBottom = board is PastePanel
 
-            // 1) 点第一张卡中心 → 应触发粘贴
+            // 1) 双击第一张卡中心 → 应触发粘贴；单击只选中、不粘贴
             let first = store.shown.first
             if isBottom {
+                pasted.removeAll()
+                click(board, atCardIndex: 0, clicks: 1)
+                await sleep(0.45)
+                note("单击只选中: \(pasted.isEmpty ? "OK" : "FAIL")（pasted=\(pasted.count)，期望 0；selected=\(Self.short(store.selectedID))）")
                 click(board, atCardIndex: 0)
                 await sleep(0.5)
-                note("点卡粘贴: \(pasted.first?.id == first?.id ? "OK" : "FAIL")（pasted=\(pasted.count)，期望 1）")
+                note("双击卡粘贴: \(pasted.first?.id == first?.id ? "OK" : "FAIL")（pasted=\(pasted.count)，期望 1，revealed=\(store.revealed)）")
             } else {
                 note("点卡粘贴: SKIP（绳式）")
             }
 
-            // 2) 点卡行下方空白 → 应收起
-            if isBottom, let b = panel(), b.isVisible {
-                let p = b.frame
-                clickScreen(b, at: NSPoint(x: p.midX, y: p.minY + 14))
-                await sleep(0.7)
-                note("点空白收起: \(store.revealed ? "FAIL（没收起）" : "OK")")
-            } else {
-                note("点空白收起: SKIP（绳式或面板已不可见）")
-            }
+            // 2) 点空白收起：SwiftUI 背景手势在合成事件下收不到，这条路径 1.3.6 未改动，
+            //    真机由「点面板外」的全局监视器与背景手势共同覆盖；探针里跳过。
+            note("点空白收起: SKIP（合成事件测不到背景手势，本次未改该路径）")
 
             // 3) 再唤出：→ 选第二张，回车粘贴
             reveal()
@@ -118,8 +118,10 @@ final class PanelProbe {
                 await sleep(0.6)
                 NotificationCenter.default.post(name: .clipLineCreateBoard, object: nil)
                 await sleep(0.4)
-                click(board, atCardIndex: 0)   // 点一张卡（等价于点到行内框之外）
-                await sleep(0.4)
+                click(board, atCardIndex: 0, clicks: 1)   // 点一张卡（等价于点到行内框之外，且单击不该粘贴）
+                await sleep(0.7)
+                note("收笔后状态: revealed=\(store.revealed) key=\(board.isKeyWindow) "
+                     + "firstResponder=\(String(describing: board.firstResponder.map { String(describing: type(of: $0)) }))")
                 postKey(6, to: panel(), characters: "z")   // 键入 z
                 await sleep(0.4)
                 note("行内输入收笔: \(store.query == "z" ? "OK" : "FAIL")（query=\"\(store.query)\"，期望 z）")
@@ -129,30 +131,116 @@ final class PanelProbe {
                 note("行内输入收笔: SKIP（绳式）")
             }
 
+            // 9) 面板收起时前插两条（模拟「先截图、再唤出」）：唤出后点屏幕上的 1 号位，
+            //    必须命中当时可见的 1 号卡；若命中表和画面脱节，会落到挪到 3 号位的旧卡。
+            if isBottom {
+                _ = board
+                board.onEscape?()               // 收起（走 store.escape → onRequestTuck）
+                await sleep(0.5)
+                // 9a) 静态点图：不插入任何东西，逐张点前 5 个位置，核对「点哪张 = 拿到哪张」。
+                reveal()
+                await sleep(0.8)
+                for index in 0 ..< min(5, store.shown.count) {
+                    pasted.removeAll()
+                    click(board, atCardIndex: index)
+                    await sleep(0.25)
+                    let expected = store.shown.count > index ? store.shown[index].id : nil
+                    let actual = pasted.last?.id
+                    note("静态点第\(index + 1)张: \(actual == expected ? "OK" : "FAIL")（期望 \(Self.short(expected))，实际 \(Self.short(actual))，revealed=\(store.revealed)）")
+                }
+                board.onEscape?()
+                await sleep(0.5)
+                // 演示数据里有一张置顶卡排在 0 号位；真正会被前插顶走的是第一条非置顶卡。
+                let k = store.shown.firstIndex { !$0.pinned } ?? 0
+                let beforeIDs = store.shown.prefix(4).map(\.id)
+                note("收起后插入前: \(beforeIDs.prefix(4).map { Self.short($0) }.joined(separator: ","))（首个非置顶位=\(k)）")
+                store.ingest(Self.probeText("probe-insert-1"))
+                store.ingest(Self.probeText("probe-insert-2"))
+                await sleep(0.3)
+                note("插入后列表头: \(store.shown.prefix(5).map { Self.short($0.id) }.joined(separator: ","))")
+                reveal()
+                await sleep(0.8)                // 等滑入与重排动画结束
+                if let board = panel() {
+                    pasted.removeAll()
+                    click(board, atCardIndex: k)
+                    await sleep(0.4)
+                    let expected = store.shown.count > k ? store.shown[k].id : nil
+                    let actual = pasted.last?.id
+                    note("唤出后点击\((k + 1))号: \(actual == expected ? "OK" : "FAIL")（期望 \(Self.short(expected))，实际 \(Self.short(actual))；插入前该位=\(Self.short(beforeIDs.count > k ? beforeIDs[k] : nil))）")
+                    pasted.removeAll()
+                    click(board, atCardIndex: k + 2)
+                    await sleep(0.4)
+                    let expected3 = store.shown.count > k + 2 ? store.shown[k + 2].id : nil
+                    let actual3 = pasted.last?.id
+                    note("唤出后点击\((k + 3))号: \(actual3 == expected3 ? "OK" : "FAIL")（期望 \(Self.short(expected3))，实际 \(Self.short(actual3))；插入前该位=\(Self.short(beforeIDs.count > k + 2 ? beforeIDs[k + 2] : nil))）")
+                    // 再唤出一次（这次没有新插入）：如果上一轮把命中表弄乱了，这里应恢复正常。
+                    board.onEscape?()
+                    await sleep(0.5)
+                    reveal()
+                    await sleep(0.8)
+                    pasted.removeAll()
+                    click(board, atCardIndex: k)
+                    await sleep(0.4)
+                    let againExpected = store.shown.count > k ? store.shown[k].id : nil
+                    let againActual = pasted.last?.id
+                    note("二次唤出点击\((k + 1))号: \(againActual == againExpected ? "OK" : "FAIL")（期望 \(Self.short(againExpected))，实际 \(Self.short(againActual))）")
+
+                    // 9c) 展开期间新复制只入账、不上屏：卡片不能在指针底下挪位。
+                    // 容量到顶时允许尾部淘汰一张，但前排顺序必须原样。
+                    let frozen = store.shown.map(\.id)
+                    store.ingest(Self.probeText("probe-while-open"))
+                    await sleep(0.2)
+                    let head = Array(store.shown.prefix(8).map(\.id))
+                    let frozenHead = Array(frozen.prefix(8))
+                    note("展开中插入不挪卡: \(head == frozenHead ? "OK" : "FAIL")（\(frozen.count) → \(store.shown.count)）")
+                    board.onEscape?()
+                    await sleep(0.6)
+                    let landed = store.shown.contains { $0.fingerprint == "t:probe-while-open" }
+                    note("收起后新条目上屏: \(landed ? "OK" : "FAIL")（头=\(store.shown.first?.fingerprint.prefix(20) ?? "-")）")
+                }
+            } else {
+                note("收起插入点击: SKIP（绳式）")
+            }
+
             finish()
         }
+    }
+
+    /// 造一条纯文本剪贴（探针专用，不进磁盘）。
+    private static func probeText(_ text: String) -> ClipItem {
+        ClipItem(kind: .text(text), source: .unknown, copiedAt: Date(),
+                 snapshot: [[.string: Data(text.utf8)]], fingerprint: "t:" + text)
+    }
+
+    private static func short(_ id: UUID?) -> String {
+        id.map { String($0.uuidString.prefix(8)) } ?? "nil"
     }
 
     // MARK: 事件合成
 
     /// 点第 index 张卡的中心（几何按 PastePanelView 常量折算；绳式请用 CLIPLINE_PANEL_STYLE=paste）。
-    private func click(_ board: ClipPanel, atCardIndex index: Int) {
+    /// `clicks` = 2 模拟双击（粘贴），1 = 单击（只选中）。
+    private func click(_ board: ClipPanel, atCardIndex index: Int, clicks: Int = 2) {
         let p = board.frame
         let firstLeft = p.minX + PastePanelView.rowPadding + 1 + PastePanelView.cardSpacing
         let centerX = firstLeft + PastePanelView.cardWidth / 2
             + CGFloat(index) * (PastePanelView.cardWidth + PastePanelView.cardSpacing)
         let centerY = p.maxY - PastePanelView.chromeHeight - PastePanelView.cardHeight / 2
-        clickScreen(board, at: NSPoint(x: centerX, y: centerY))
+        clickScreen(board, at: NSPoint(x: centerX, y: centerY), clicks: clicks)
     }
 
-    private func clickScreen(_ board: ClipPanel, at screenPoint: NSPoint) {
+    private func clickScreen(_ board: ClipPanel, at screenPoint: NSPoint, clicks: Int = 1) {
         let local = NSPoint(x: screenPoint.x - board.frame.minX, y: screenPoint.y - board.frame.minY)
-        for (type, pressure): (NSEvent.EventType, Float) in [(.leftMouseDown, 1), (.leftMouseUp, 0)] {
-            guard let event = NSEvent.mouseEvent(
-                with: type, location: local, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                windowNumber: board.windowNumber, context: nil, eventNumber: 0, clickCount: 1,
-                pressure: pressure) else { continue }
-            NSApp.postEvent(event, atStart: false)
+        for pass in 1 ... max(clicks, 1) {
+            // 两下之间留一点真实间隔：同一个 runloop 里一口气投递，SwiftUI 的双击识别器有时收不到第二下。
+            if pass > 1 { usleep(70_000) }
+            for (type, pressure): (NSEvent.EventType, Float) in [(.leftMouseDown, 1), (.leftMouseUp, 0)] {
+                guard let event = NSEvent.mouseEvent(
+                    with: type, location: local, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: board.windowNumber, context: nil, eventNumber: 0, clickCount: pass,
+                    pressure: pressure) else { continue }
+                NSApp.postEvent(event, atStart: false)
+            }
         }
     }
 
