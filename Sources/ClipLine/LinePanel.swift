@@ -63,6 +63,11 @@ class ClipPanel: NSPanel {
 
     /// 点过卡片之类的地方后，焦点回到搜索框；行内输入框（新建/重命名标签）之外的点击会先结束它的编辑。
     override func sendEvent(_ event: NSEvent) {
+        // 排错取证：记下这次按下的真实坐标与卡片行当时的滚动偏移（合成事件也适用）。
+        if event.type == .leftMouseDown {
+            ClickDebug.capture(window: self, pointInWindow: event.locationInWindow,
+                               isPastePanel: self is PastePanel)
+        }
         super.sendEvent(event)
         if event.type == .leftMouseUp, isVisible, isKeyWindow {
             endInlineEditingIfClickedOutside(event)

@@ -395,18 +395,19 @@ final class ClipStore: ObservableObject {
 
     /// 排错用：把「鼠标点在哪一列」与「实际收到点击的条目排在第几」并列写进日志。
     /// 两者不一致就是命中表与画面脱节——点 1 号位却贴出 3 号位的图正是这个形态。
+    /// 坐标取自点击事件本身（`ClickDebug`），并按当时卡片行的真实滚动偏移折算，
+    /// 这样合成事件、横向滚过之后再点都算得准。
     private static func tapGeometry(_ item: ClipItem, in shown: [ClipItem]) -> String {
         guard DebugLog.enabled else { return "" }
-        let mouse = NSEvent.mouseLocation
-        guard let board = NSApp.windows.first(where: { $0.isVisible && $0.frame.height == PastePanelView.panelHeight }) else {
-            return " mouse=\(NSStringFromPoint(mouse))"
-        }
-        let pitch = PastePanelView.cardWidth + PastePanelView.cardSpacing
-        // 滚动条静止时内容原点停在左内边距（14）上，1pt 起始锚 + 间距之后是第一张卡的左缘。
-        let firstLeft = board.frame.minX + 1 + PastePanelView.cardSpacing
-        let column = Int(floor((mouse.x - firstLeft) / pitch))
         let index = shown.firstIndex { $0.id == item.id } ?? -1
-        return " column=\(column) tapIndex=\(index) panelX=\(Int(board.frame.minX)) mouseX=\(Int(mouse.x))"
+        guard let sample = ClickDebug.last, sample.isPastePanel else { return " tapIndex=\(index)" }
+        let pitch = PastePanelView.cardWidth + PastePanelView.cardSpacing
+        let viewportX = sample.screenPoint.x - sample.panelOrigin.x
+        let contentX = viewportX + sample.scrollOffset
+        // 内容坐标里第一张卡的左缘 = 左内边距 + 1pt 起始锚 + 一个卡间距。
+        let firstLeft = PastePanelView.rowPadding + 1 + PastePanelView.cardSpacing
+        let column = Int(floor((contentX - firstLeft) / pitch))
+        return " column=\(column) tapIndex=\(index) viewportX=\(Int(viewportX)) scroll=\(Int(sample.scrollOffset))"
     }
 
     /// Esc：先清搜索词，再看标签页，最后才收起面板。
