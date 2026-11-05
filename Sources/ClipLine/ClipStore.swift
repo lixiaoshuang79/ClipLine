@@ -337,8 +337,15 @@ final class ClipStore: ObservableObject {
         refilter(queryChanged: false)
     }
 
+    /// 每次唤出递增：卡片行整个重建，滚动位置与命中表一起归零。
+    @Published private(set) var rowEpoch = 0
+
     /// 每次唤出都回到列表开头：1 号位永远是最新复制的条目。
+    /// 只发滚动请求不够——真机上出现过滚动位置没归零、点击落到相邻卡的情形
+    /// （点 1 号位贴出 3 号位的图，2026-11-05）。这里连视图带滚动视图一起重建，
+    /// 画面与命中表必然同源。
     func scrollToStart() {
+        rowEpoch &+= 1
         requestScroll(.start)
     }
 
@@ -377,12 +384,29 @@ final class ClipStore: ObservableObject {
             $0.id == item.id && now.timeIntervalSince($0.at) <= NSEvent.doubleClickInterval
         } ?? false
         lastTap = doubled ? nil : (item.id, now)
-        DebugLog.write("tap id=\(item.id.uuidString.prefix(6)) double=\(doubled) shown=\(shown.prefix(3).map { String($0.id.uuidString.prefix(6)) }.joined(separator: ","))")
+        DebugLog.write("tap id=\(item.id.uuidString.prefix(6)) double=\(doubled) shown=\(shown.prefix(3).map { String($0.id.uuidString.prefix(6)) }.joined(separator: ","))"
+                       + Self.tapGeometry(item, in: shown))
         if doubled {
             onRequestPaste?(item)
         } else {
             selectedID = item.id
         }
+    }
+
+    /// 排错用：把「鼠标点在哪一列」与「实际收到点击的条目排在第几」并列写进日志。
+    /// 两者不一致就是命中表与画面脱节——点 1 号位却贴出 3 号位的图正是这个形态。
+    private static func tapGeometry(_ item: ClipItem, in shown: [ClipItem]) -> String {
+        guard DebugLog.enabled else { return "" }
+        let mouse = NSEvent.mouseLocation
+        guard let board = NSApp.windows.first(where: { $0.isVisible && $0.frame.height == PastePanelView.panelHeight }) else {
+            return " mouse=\(NSStringFromPoint(mouse))"
+        }
+        let pitch = PastePanelView.cardWidth + PastePanelView.cardSpacing
+        // 滚动条静止时内容原点停在左内边距（14）上，1pt 起始锚 + 间距之后是第一张卡的左缘。
+        let firstLeft = board.frame.minX + 1 + PastePanelView.cardSpacing
+        let column = Int(floor((mouse.x - firstLeft) / pitch))
+        let index = shown.firstIndex { $0.id == item.id } ?? -1
+        return " column=\(column) tapIndex=\(index) panelX=\(Int(board.frame.minX)) mouseX=\(Int(mouse.x))"
     }
 
     /// Esc：先清搜索词，再看标签页，最后才收起面板。

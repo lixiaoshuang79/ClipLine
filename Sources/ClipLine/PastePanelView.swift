@@ -53,10 +53,15 @@ struct PastePanelView: View {
                     }
                     .padding(.horizontal, Self.rowPadding)
                     .frame(height: Self.cardHeight, alignment: .top)
-                    .animation(.spring(response: 0.4, dampingFraction: 0.85), value: store.shown.map(\.id))
+                    // 面板收起时插入的新卡不播动画：不可见的窗口上跑插入动画，
+                    // 会让滚动视图的停靠位置与 SwiftUI 记的位置脱节（点击错位的来源之一）。
+                    .animation(store.revealed ? .spring(response: 0.4, dampingFraction: 0.85) : nil,
+                               value: store.shown.map(\.id))
                 }
                 .frame(height: Self.cardHeight)
                 .padding(.top, 19)
+                // 每次唤出重建整行：滚动位置与命中表一起从头开始。
+                .id(store.rowEpoch)
                 .onChange(of: store.scrollRequest) { _, request in
                     guard let request else { return }
                     DispatchQueue.main.async {

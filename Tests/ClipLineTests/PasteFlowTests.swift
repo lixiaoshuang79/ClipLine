@@ -52,8 +52,19 @@ final class PasteFlowTests: XCTestCase {
         XCTAssertEqual(text(store.shown.first), "面板开着时复制的内容", "收起后补上屏")
     }
 
-    func testPasteWritesTheClickedItemsOwnSnapshot() {
-        copy("第一条剪贴内容")
+    /// 唤出必须重建整行：只发滚动请求时，真机上出现过滚动没归零、点击落到相邻卡
+    /// （点 1 号位贴出 3 号位的图，2026-11-05）。`rowEpoch` 变化会让 SwiftUI 连同
+    /// 滚动视图一起重建，画面与命中表必然同源。
+    func testSummonRebuildsCardRow() {
+        copy("第一张")
+        store.syncFromPasteboard()
+        let before = store.rowEpoch
+        store.scrollToStart()
+        XCTAssertEqual(store.rowEpoch, before + 1, "每次唤出重建卡片行")
+        XCTAssertEqual(store.scrollRequest?.target, .start, "同时保留滚回开头的请求")
+    }
+
+    func testPasteWritesTheClickedItemsOwnSnapshot() {        copy("第一条剪贴内容")
         store.syncFromPasteboard()
         copy("第二条剪贴内容")
         store.syncFromPasteboard()

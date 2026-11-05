@@ -202,6 +202,89 @@ final class PanelProbe {
                 note("收起插入点击: SKIP（绳式）")
             }
 
+            // 10) 真机复现形态（2026-11-05）：面板完全收起后进来两张图 → 唤出（滑入 + scrollToStart）
+            //     → 按屏幕几何逐张点。若命中表与画面脱节，会出现「点第 1 张、拿到第 3 张」。
+            //     与第 9 步的区别：图卡 + 显式等收起完成 + 逐点位核对全部前 4 张。
+            if isBottom {
+                board.onEscape?()
+                await sleep(0.8)                 // 等滑出与 orderOut 完成，此时面板真的不在屏上
+                store.ingest(Self.probeImage("probe-img-1"))
+                store.ingest(Self.probeImage("probe-img-2"))
+                await sleep(0.5)
+                note("10-前插后列表头: \(store.shown.prefix(5).map { Self.short($0.id) }.joined(separator: ","))")
+                reveal()
+                await sleep(1.2)                 // 等滑入、scrollToStart 与插入动画全部结束
+                for index in 0 ..< min(4, store.shown.count) {
+                    pasted.removeAll()
+                    click(board, atCardIndex: index)
+                    await sleep(0.45)
+                    let expected = store.shown[index].id
+                    let actual = pasted.last?.id
+                    let got = actual.flatMap { id in store.shown.firstIndex { $0.id == id } } ?? -1
+                    note("10-前插后点第\(index + 1)张: \(actual == expected ? "OK" : "FAIL")"
+                         + "（期望 \(Self.short(expected))，实际 \(Self.short(actual))[第\(got + 1)张]，"
+                         + "selected=\(Self.short(store.selectedID))）")
+                }
+
+                // 11) 同样的前插，但收起前把列表横向滚离开头——下次唤出必须滚回起点。
+                //     真机上 11:38 那次点的就是第 7 张（在 1512pt 屏上不滚看不见），13:37 再唤出就错位了。
+                board.onEscape?()
+                await sleep(0.8)
+                reveal()
+                await sleep(0.8)
+                for _ in 0 ..< 8 { store.select(offset: 1) }   // 选择并滚到第 9 张附近
+                await sleep(0.8)                               // 等滚动动画结束
+                board.onEscape?()
+                await sleep(0.8)
+                store.ingest(Self.probeImage("probe-img-3"))
+                store.ingest(Self.probeImage("probe-img-4"))
+                await sleep(0.4)
+                reveal()
+                await sleep(1.2)
+                note("11-滚动后再唤出列表头: \(store.shown.prefix(5).map { Self.short($0.id) }.joined(separator: ","))")
+                for index in 0 ..< min(4, store.shown.count) {
+                    pasted.removeAll()
+                    click(board, atCardIndex: index)
+                    await sleep(0.45)
+                    let expected = store.shown[index].id
+                    let actual = pasted.last?.id
+                    let got = actual.flatMap { id in store.shown.firstIndex { $0.id == id } } ?? -1
+                    note("11-滚动后再点第\(index + 1)张: \(actual == expected ? "OK" : "FAIL")"
+                         + "（期望 \(Self.short(expected))，实际 \(Self.short(actual))[第\(got + 1)张]）")
+                }
+
+                // 12) 长列表（对齐真机几百条）+ 滚到很靠后：开头锚点在懒加载范围外，
+                //     scrollTo(startAnchor) 可能找不到视图而不生效——下次唤出就停在旧位置。
+                note("12-滚动偏移（插入前）: \(scrollOffset(board))")
+                for i in 0 ..< 300 { store.ingest(Self.probeText("bulk-\(i)")) }
+                await sleep(0.6)
+                reveal()
+                await sleep(1.0)
+                note("12-唤出后偏移: \(scrollOffset(board))")
+                for _ in 0 ..< 40 { store.select(offset: 1) }
+                await sleep(1.2)                 // 等最后一跳滚动动画结束
+                note("12-滚远后偏移: \(scrollOffset(board))")
+                let parkedOn = store.selectedID
+                board.onEscape?()
+                await sleep(0.8)
+                reveal()
+                await sleep(1.2)
+                let headIDs = store.shown.prefix(3).map { Self.short($0.id) }.joined(separator: ",")
+                note("12-长列表滚远后唤出: 现有 \(store.shown.count) 条，头=\(headIDs)，"
+                     + "收起时选中=\(Self.short(parkedOn))")
+                note("12-长列表唤出后偏移: \(scrollOffset(board))")
+                pasted.removeAll()
+                click(board, atCardIndex: 0)
+                await sleep(0.5)
+                let expected0 = store.shown[0].id
+                let actual0 = pasted.last?.id
+                let got0 = actual0.flatMap { id in store.shown.firstIndex { $0.id == id } } ?? -1
+                note("12-长列表点第1张: \(actual0 == expected0 ? "OK" : "FAIL")"
+                     + "（期望 \(Self.short(expected0))，实际 \(Self.short(actual0))[第\(got0 + 1)张]）")
+            } else {
+                note("前插后点卡: SKIP（绳式）")
+            }
+
             finish()
         }
     }
@@ -212,8 +295,47 @@ final class PanelProbe {
                  snapshot: [[.string: Data(text.utf8)]], fingerprint: "t:" + text)
     }
 
+    /// 造一张图卡（探针专用）：不同编号画不同条数的横线，保证内容与指纹各不相同。
+    private static func probeImage(_ name: String) -> ClipItem {
+        let size = NSSize(width: 400, height: 300)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        NSColor(srgbRed: 0.16, green: 0.36, blue: 0.72, alpha: 1).setFill()
+        NSRect(origin: .zero, size: size).fill()
+        NSColor.white.withAlphaComponent(0.85).setFill()
+        let bars = 1 + (abs(name.hashValue) % 5)
+        for i in 0 ..< bars {
+            NSRect(x: 24, y: 40 + i * 40, width: 352, height: 12).fill()
+        }
+        image.unlockFocus()
+        guard let data = image.tiffRepresentation,
+              let item = ClipItem.make(snapshot: [[.tiff: data]], source: .unknown) else {
+            return probeText(name)
+        }
+        return item
+    }
+
     private static func short(_ id: UUID?) -> String {
         id.map { String($0.uuidString.prefix(8)) } ?? "nil"
+    }
+
+    /// 面板里真正在渲染的滚动偏移（SwiftUI 的 ScrollView 底层是 NSScrollView）。
+    /// 命中表若与画面脱节，这个数会和 SwiftUI 认为的位置对不上——探针里当硬指标看。
+    /// 顶栏也有一根横向滚动条，取文档最宽的那根（卡片行）。
+    private func scrollOffset(_ board: ClipPanel) -> String {
+        guard let content = board.contentView else { return "no-content" }
+        var all: [NSScrollView] = []
+        func walk(_ view: NSView) {
+            if view is NSTextView { return }
+            if let scroll = view as? NSScrollView { all.append(scroll) }
+            for child in view.subviews { walk(child) }
+        }
+        walk(content)
+        guard !all.isEmpty else { return "no-scrollview" }
+        let widest = all.max { ($0.documentView?.frame.width ?? 0) < ($1.documentView?.frame.width ?? 0) }!
+        let summary = all.map { "x=\(Int($0.contentView.bounds.origin.x))/doc=\(Int($0.documentView?.frame.width ?? 0))" }
+        return summary.joined(separator: " | ")
+            + " → 卡片行 x=\(Int(widest.contentView.bounds.origin.x))"
     }
 
     // MARK: 事件合成

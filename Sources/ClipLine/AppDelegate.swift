@@ -225,15 +225,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store.syncFromPasteboard()
         let board = activePanel
         board.placeOnScreen()
-        if store.selectedItem == nil { store.selectedID = store.shown.first?.id }
+        // 每次唤出都从第一张（最新的）开始：上次贴过的卡不再保持选中——
+        // 旧行为会让上一轮贴过的那张一直带着蓝框，看起来像「被选中锁住」。
+        store.selectedID = store.shown.first?.id
         store.revealed = true
         board.ignoresMouseEvents = false
         board.orderFrontRegardless()
         store.scrollToStart()
         DebugLog.write("reveal shown=\(store.shown.prefix(5).map { String($0.id.uuidString.prefix(6)) }.joined(separator: ","))"
                        + " selected=\(store.selectedID.map { String($0.uuidString.prefix(6)) } ?? "-")")
-        // 自截图调试时不抢键盘：否则前台 App 里正在打的字会落进搜索框。
-        if ProcessInfo.processInfo.environment["CLIPLINE_SNAPSHOT"] == nil {
+        // 自截图/探针调试时不抢键盘：否则前台 App 里正在打的字会落进搜索框。
+        if ProcessInfo.processInfo.environment["CLIPLINE_SNAPSHOT"] == nil,
+           ProcessInfo.processInfo.environment["CLIPLINE_NO_KEY"] == nil {
             board.makeKey()
             board.focusSearch()
         }

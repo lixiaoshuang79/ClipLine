@@ -64,10 +64,14 @@ struct LineView: View {
                     .padding(.leading, Layout.x(index: 0, count: shown.count, width: width) - Layout.cardWidth / 2)
                     .frame(width: width, height: Layout.panelHeight, alignment: .topLeading)
                     .background(alignment: .topLeading) { backdrop(width: width, empty: shown.isEmpty) }
-                    .animation(.spring(response: 0.55, dampingFraction: 0.78), value: shown.map(\.id))
+                    // 收起时的插入不播动画（原因同底部面板）。
+                    .animation(store.revealed ? .spring(response: 0.55, dampingFraction: 0.78) : nil,
+                               value: shown.map(\.id))
                     .animation(.easeInOut(duration: 0.3), value: shown.isEmpty)
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height)
+                // 每次唤出重建整行：滚动位置与命中表一起从头开始。
+                .id(store.rowEpoch)
                 .onChange(of: store.scrollRequest) { _, request in
                     guard let request else { return }
                     // 等这一轮过滤的布局落定再滚。
