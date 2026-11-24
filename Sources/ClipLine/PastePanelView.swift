@@ -406,7 +406,9 @@ private struct PasteCardView: View {
     let onCreateBoard: (ClipItem) -> Void
 
     @Environment(\.colorScheme) private var scheme
-    @State private var hovering = false
+    /// 悬停由 AppKit 跟踪区域 + TapGeometry 解算后写进 store（`store.hoveredID`），
+    /// 不用 SwiftUI 的 onHover：它的跟踪区域和命中表会滞后于画面（2026-11-24 用户复现）。
+    private var hovering: Bool { store.hoveredID == item.id }
 
     private var shape: RoundedRectangle {
         // REA 逆向量：kCACornerCurveCircular（圆角，非 continuous 超椭圆）。
@@ -467,7 +469,6 @@ private struct PasteCardView: View {
                 .transition(.opacity)
             }
         }
-        .onHover { hovering = $0 }
         // 双击才粘贴：第一下只选中（打蓝框），同一个卡片上的第二下才粘贴。
         .onTapGesture { store.handleTap(item) }
         .contextMenu { cardMenu }

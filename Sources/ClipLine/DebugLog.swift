@@ -8,9 +8,23 @@ enum DebugLog {
 
     static func write(_ line: String) {
         guard enabled else { return }
+        append(line)
+    }
+
+    /// 只给「本不该发生」的异常留痕用：不依赖 CLIPLINE_DEBUG，出一次就记一次。
+    static func writeAlways(_ line: String) {
+        append(line)
+    }
+
+    private static func append(_ line: String) {
         let stamp = String(format: "%.3f", Date().timeIntervalSince1970)
         guard let data = "[\(stamp)] \(line)\n".data(using: .utf8) else { return }
         let path = "/tmp/clipline-paste-debug.log"
+        // 常开日志只记点击/唤出这类一行一条的事件，涨得慢；超过 512KB 就滚一份旧的。
+        if let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? Int, size > 512 * 1024 {
+            try? FileManager.default.removeItem(atPath: path + ".1")
+            try? FileManager.default.moveItem(atPath: path, toPath: path + ".1")
+        }
         if let handle = FileHandle(forWritingAtPath: path) {
             handle.seekToEndOfFile()
             handle.write(data)

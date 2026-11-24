@@ -324,6 +324,9 @@ final class ClipStore: ObservableObject {
                 if let selectedID, !surviving.contains(where: { $0.id == selectedID }) {
                     self.selectedID = surviving.first?.id
                 }
+                if let hoveredID, !surviving.contains(where: { $0.id == hoveredID }) {
+                    self.hoveredID = nil
+                }
             }
         } else {
             refilter(queryChanged: false)
@@ -364,6 +367,15 @@ final class ClipStore: ObservableObject {
         requestScroll(.item(shown[next].id))
     }
 
+    /// 指针下的卡（底部面板由 AppKit 的跟踪区域 + 几何解算驱动，见 TapGeometry）。
+    /// 同一时刻最多一张：悬停高亮、× 按钮都只认它，不再各自听 SwiftUI 的 onHover。
+    @Published private(set) var hoveredID: UUID?
+
+    func hover(index: Int?) {
+        let id = index.flatMap { shown.indices.contains($0) ? shown[$0].id : nil }
+        if hoveredID != id { hoveredID = id }
+    }
+
     var selectedItem: ClipItem? {
         guard let selectedID else { return nil }
         return shown.first { $0.id == selectedID }
@@ -379,18 +391,37 @@ final class ClipStore: ObservableObject {
     private var lastTap: (id: UUID, at: Date)?
 
     func handleTap(_ item: ClipItem) {
+        // 先按「按下时指针下的那张卡」复核 SwiftUI 递来的条目（见 TapGeometry）。
+        let target = geometryCorrection(for: item)
         let now = Date()
         let doubled = lastTap.map {
-            $0.id == item.id && now.timeIntervalSince($0.at) <= NSEvent.doubleClickInterval
+            $0.id == target.id && now.timeIntervalSince($0.at) <= NSEvent.doubleClickInterval
         } ?? false
-        lastTap = doubled ? nil : (item.id, now)
-        DebugLog.write("tap id=\(item.id.uuidString.prefix(6)) double=\(doubled) shown=\(shown.prefix(3).map { String($0.id.uuidString.prefix(6)) }.joined(separator: ","))"
-                       + Self.tapGeometry(item, in: shown))
+        lastTap = doubled ? nil : (target.id, now)
+        // 点击一条一行、常开（不依赖 CLIPLINE_DEBUG）：这个错位第三次复发，下次必须有一手证据。
+        DebugLog.writeAlways("tap id=\(target.id.uuidString.prefix(6)) double=\(doubled) shown=\(shown.prefix(3).map { String($0.id.uuidString.prefix(6)) }.joined(separator: ","))"
+                             + Self.tapGeometry(target, in: shown))
         if doubled {
-            onRequestPaste?(item)
+            onRequestPaste?(target)
         } else {
-            selectedID = item.id
+            selectedID = target.id
         }
+    }
+
+    /// SwiftUI 的命中结果与按下位置不一致时，以按下位置的几何解为准。
+    /// 命中表滞后（行重建、滚动定位动画、点击中途重排）时 SwiftUI 会递来相邻的条目——
+    /// 这正是 2026-11-03、11-05、11-24 三次「点这张、选中/贴出后一张」的共同形态。
+    /// 两者不一致这件事本身要留痕（不依赖 CLIPLINE_DEBUG），复现时可直接从日志看是哪种形态。
+    private func geometryCorrection(for item: ClipItem) -> ClipItem {
+        guard let sample = TapGeometry.lastDown else { return item }
+        TapGeometry.lastDown = nil
+        guard Date().timeIntervalSince(sample.at) <= 1.0, let index = sample.index else { return item }
+        guard shown.indices.contains(index) else { return item }
+        guard shown[index].id != item.id else { return item }
+        DebugLog.writeAlways("tap corrected swiftui=\(item.id.uuidString.prefix(6))"
+                             + " geometry=\(shown[index].id.uuidString.prefix(6)) index=\(index)"
+                             + " shown=\(shown.prefix(6).map { String($0.id.uuidString.prefix(6)) }.joined(separator: ","))")
+        return shown[index]
     }
 
     /// 排错用：把「鼠标点在哪一列」与「实际收到点击的条目排在第几」并列写进日志。
@@ -464,6 +495,7 @@ final class ClipStore: ObservableObject {
         }
         let next = search.isEmpty ? scoped : scoped.filter(search.matches)
         shown = next
+        if let hoveredID, !shown.contains(where: { $0.id == hoveredID }) { self.hoveredID = nil }
         let selectionVisible = selectedID.map { id in shown.contains { $0.id == id } } ?? false
         if queryChanged, !search.isEmpty {
             selectedID = shown.first?.id

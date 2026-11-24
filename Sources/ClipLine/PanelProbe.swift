@@ -285,6 +285,40 @@ final class PanelProbe {
                 note("前插后点卡: SKIP（绳式）")
             }
 
+            // 13) 真机节奏（2026-11-24 用户复现）：唤出后不等动画结束就点。
+            //     先把行滚远、收起、前插一条，再在 80/180/300ms 点第 1 个位置——
+            //     若命中表没跟着滚动归零，会「点第 1 张、拿到第 N 张」。
+            if isBottom {
+                for delay in [0.08, 0.18, 0.30] {
+                    board.onEscape?()
+                    await sleep(0.8)
+                    reveal()
+                    await sleep(0.8)
+                    for _ in 0 ..< 20 { store.select(offset: 1) }   // 滚到 20 张开外
+                    await sleep(1.0)
+                    let parkedOffset = scrollOffset(board)
+                    board.onEscape?()
+                    await sleep(0.8)
+                    store.ingest(Self.probeImage("probe-fast-\(delay)"))
+                    await sleep(0.3)
+                    reveal()
+                    await sleep(delay)
+                    let offsetAtClick = scrollOffset(board)
+                    pasted.removeAll()
+                    click(board, atCardIndex: 0)
+                    await sleep(0.5)
+                    let expected = store.shown[0].id
+                    let actual = pasted.last?.id
+
+                    let got = actual.flatMap { id in store.shown.firstIndex { $0.id == id } } ?? -1
+                    note("13-唤出后\(Int(delay * 1000))ms点第1张: \(actual == expected ? "OK" : "FAIL")"
+                         + "（期望 \(Self.short(expected))，实际 \(Self.short(actual))[第\(got + 1)张]；"
+                         + "点前偏移 \(offsetAtClick)，上轮收起时 \(parkedOffset)）")
+                }
+            } else {
+                note("13-快速点击: SKIP（绳式）")
+            }
+
             finish()
         }
     }

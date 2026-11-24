@@ -192,6 +192,116 @@ final class PasteFlowTests: XCTestCase {
         XCTAssertEqual(store.selectedID, second.id)
     }
 
+    // MARK: 点击几何（2026-11-24 第三次「点这张、选中/贴出后一张」）
+
+    /// 视口坐标 → 卡下标：行内边距 + 1pt 起始锚 + 一个卡间距是固定版式，带滚动偏移也要算准。
+    func testTapGeometryMapsViewportPointToCard() {
+        let firstLeft = PastePanelView.rowPadding + 1 + PastePanelView.cardSpacing
+        let center = PastePanelView.cardWidth / 2
+        let pitch = PastePanelView.cardWidth + PastePanelView.cardSpacing
+        for offset: CGFloat in [0, 14, 243.5 * 3 + 14] {
+            for index in 0 ..< 6 {
+                let viewportX = firstLeft + CGFloat(index) * pitch + center - offset
+                XCTAssertEqual(TapGeometry.cardIndex(viewportX: viewportX, scrollOffset: offset), index,
+                               "偏移 \(offset) 下第 \(index + 1) 张卡的中心应解到 \(index)")
+            }
+        }
+    }
+
+    func testTapGeometryRejectsGapsAndLeadingSpace() {
+        let firstLeft = PastePanelView.rowPadding + 1 + PastePanelView.cardSpacing
+        // 内容坐标里的位置换算到视口：视口 x = 内容 x − 滚动偏移。
+        XCTAssertNil(TapGeometry.cardIndex(viewportX: 0, scrollOffset: 14),
+                     "第一张卡左边的行内边距不该解出卡")
+        let gapX = firstLeft + PastePanelView.cardWidth + PastePanelView.cardSpacing / 2
+        XCTAssertNil(TapGeometry.cardIndex(viewportX: gapX - 14, scrollOffset: 14),
+                     "卡片之间的缝不该解出卡")
+        XCTAssertNil(TapGeometry.cardIndex(viewportX: -100, scrollOffset: 14), "视口之外")
+    }
+
+    /// SwiftUI 的命中表滞后时递来邻卡：store 必须按「按下那一刻指针下的卡」纠正。
+    func testTapUsesCardUnderPointerWhenHitTableDisagrees() {
+        copy("第一条剪贴内容")
+        store.syncFromPasteboard()
+        copy("第二条剪贴内容")
+        store.syncFromPasteboard()
+        copy("第三条剪贴内容")
+        store.syncFromPasteboard()
+        let shown = store.shown
+        XCTAssertEqual(shown.count, 3)
+
+        TapGeometry.lastDown = TapGeometry.Sample(windowNumber: 0, at: Date(), index: 1)
+        store.handleTap(shown[0])   // SwiftUI 说点的是第 1 张
+        XCTAssertEqual(store.selectedID, shown[1].id, "以按下时指针下的第 2 张为准")
+        XCTAssertNil(TapGeometry.lastDown, "用过的样本要清掉")
+    }
+
+    /// 双击粘贴同样按指针下的卡算：两下都解到同一张，才算一次双击。
+    func testDoubleClickPastesCardUnderPointer() {
+        copy("第一条剪贴内容")
+        store.syncFromPasteboard()
+        copy("第二条剪贴内容")
+        store.syncFromPasteboard()
+        copy("第三条剪贴内容")
+        store.syncFromPasteboard()
+        let shown = store.shown
+        var pasted: [ClipItem] = []
+        store.onRequestPaste = { pasted.append($0) }
+
+        TapGeometry.lastDown = TapGeometry.Sample(windowNumber: 0, at: Date(), index: 2)
+        store.handleTap(shown[0])
+        XCTAssertEqual(store.selectedID, shown[2].id, "第一下选中指针下的第 3 张")
+
+        TapGeometry.lastDown = TapGeometry.Sample(windowNumber: 0, at: Date(), index: 2)
+        store.handleTap(shown[1])   // 第二下 SwiftUI 又递来邻卡
+        XCTAssertEqual(pasted.map(\.id), [shown[2].id], "粘贴的必须是指针下那张")
+    }
+
+    /// 过期的样本、越界的下标：一律退回 SwiftUI 的结果，不猜。
+    func testStaleOrOutOfRangeGeometryFallsBack() {
+        copy("第一条剪贴内容")
+        store.syncFromPasteboard()
+        copy("第二条剪贴内容")
+        store.syncFromPasteboard()
+        let shown = store.shown
+
+        TapGeometry.lastDown = TapGeometry.Sample(windowNumber: 0, at: Date().addingTimeInterval(-2), index: 1)
+        store.handleTap(shown[0])
+        XCTAssertEqual(store.selectedID, shown[0].id, "过期样本不参与纠正")
+
+        TapGeometry.lastDown = TapGeometry.Sample(windowNumber: 0, at: Date(), index: 99)
+        store.handleTap(shown[1])
+        XCTAssertEqual(store.selectedID, shown[1].id, "越界下标不参与纠正")
+    }
+
+    // MARK: 悬停几何（2026-11-24：悬停与点击同源，不再用 SwiftUI 的 onHover）
+
+    func testHoverIndexMapsToCardUnderPointer() {
+        copy("第一条剪贴内容")
+        store.syncFromPasteboard()
+        copy("第二条剪贴内容")
+        store.syncFromPasteboard()
+        copy("第三条剪贴内容")
+        store.syncFromPasteboard()
+        let shown = store.shown
+        let selectedBefore = store.selectedID
+
+        store.hover(index: 0)
+        XCTAssertEqual(store.hoveredID, shown[0].id)
+        store.hover(index: 2)
+        XCTAssertEqual(store.hoveredID, shown[2].id, "悬停跟着指针走")
+        store.hover(index: nil)
+        XCTAssertNil(store.hoveredID, "指针离开卡片行/面板就清掉悬停")
+        XCTAssertEqual(store.selectedID, selectedBefore, "悬停不碰选中")
+    }
+
+    func testHoverIgnoresOutOfRangeIndex() {
+        copy("第一条剪贴内容")
+        store.syncFromPasteboard()
+        store.hover(index: 7)
+        XCTAssertNil(store.hoveredID, "指针落在没有卡的位置不悬停")
+    }
+
     func testRepeatedCopiesOfSameContentDoNotDuplicate() {
         copy("重复的一条剪贴内容")
         store.syncFromPasteboard()

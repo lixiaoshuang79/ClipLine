@@ -8,6 +8,9 @@ class ClipPanel: NSPanel {
     var onEnter: (() -> Void)?
     var onLeft: (() -> Void)?
     var onRight: (() -> Void)?
+    /// 指针在卡片行里的位置（nil = 不在卡上或离开了面板）。底部面板由本层几何解算后回调，
+    /// 悬停高亮不再走 SwiftUI 的跟踪区域（它和点击命中表一样会滞后于画面，2026-11-24）。
+    var onHoverCardIndex: ((Int?) -> Void)?
 
     private(set) weak var searchField: NSTextField?
     private var wantsSearchFocus = false
@@ -30,9 +33,39 @@ class ClipPanel: NSPanel {
         animationBehavior = .none
         acceptsMouseMovedEvents = true
         contentView = content
+        // 悬停跟踪：整个内容区，进/出/移动都收（面板不激活也要工作）。
+        content.addTrackingArea(NSTrackingArea(rect: .zero,
+                                              options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                              owner: self, userInfo: nil))
     }
 
     override var canBecomeKey: Bool { true }
+
+    // MARK: 悬停（底部面板按几何解算，绳式仍由 SwiftUI 管）
+
+    override func mouseMoved(with event: NSEvent) {
+        reportHover(pointInWindow: event.locationInWindow)
+    }
+
+    /// 滚动时指针不动、卡在动：滚完按指针当前位置重解一次，别把悬停留在滚走的那张上。
+    override func scrollWheel(with event: NSEvent) {
+        super.scrollWheel(with: event)
+        guard self is PastePanel else { return }
+        reportHover(pointInWindow: convertPoint(fromScreen: NSEvent.mouseLocation))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        reportHover(pointInWindow: event.locationInWindow)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onHoverCardIndex?(nil)
+    }
+
+    private func reportHover(pointInWindow: NSPoint) {
+        guard self is PastePanel else { return }   // 绳式版式不同，保持 SwiftUI 的 onHover
+        onHoverCardIndex?(TapGeometry.cardIndex(atWindowPoint: pointInWindow, in: self))
+    }
     override var canBecomeMain: Bool { false }
 
     // MARK: 搜索框焦点
@@ -67,6 +100,13 @@ class ClipPanel: NSPanel {
         if event.type == .leftMouseDown {
             ClickDebug.capture(window: self, pointInWindow: event.locationInWindow,
                                isPastePanel: self is PastePanel)
+            // 点击定位的独立解算：按下那一刻指针下是哪张卡，由事件坐标 + 滚动视图真实偏移算出来，
+            // 点击到达 store 时以它为准（SwiftUI 的命中表在重建/滚动动画期间会滞后，见 TapGeometry）。
+            TapGeometry.captureDown(window: self, pointInWindow: event.locationInWindow)
+        }
+        // 兜底：跟踪区域万一没送到，窗口自己的移动事件也更新悬停。
+        if event.type == .mouseMoved {
+            reportHover(pointInWindow: event.locationInWindow)
         }
         super.sendEvent(event)
         if event.type == .leftMouseUp, isVisible, isKeyWindow {

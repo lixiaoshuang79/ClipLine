@@ -35,6 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.placeOnScreen()
         pastePanel = PastePanel(content: NSHostingView(rootView: PastePanelView(store: store)))
         pastePanel.placeOnScreen()
+        // 悬停高亮：底部面板改成几何解算（指针坐标 + 滚动偏移），不再听 SwiftUI 的 onHover。
+        pastePanel.onHoverCardIndex = { [weak self] index in self?.store.hover(index: index) }
 
         store.onRequestTuck = { [weak self] in self?.tuck() }
         store.onRequestPaste = { [weak self] item in self?.pasteAndTuck(item) }
@@ -228,12 +230,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 每次唤出都从第一张（最新的）开始：上次贴过的卡不再保持选中——
         // 旧行为会让上一轮贴过的那张一直带着蓝框，看起来像「被选中锁住」。
         store.selectedID = store.shown.first?.id
+        store.hover(index: nil)          // 上次收起时的悬停不带到这一次
         store.revealed = true
         board.ignoresMouseEvents = false
         board.orderFrontRegardless()
         store.scrollToStart()
-        DebugLog.write("reveal shown=\(store.shown.prefix(5).map { String($0.id.uuidString.prefix(6)) }.joined(separator: ","))"
-                       + " selected=\(store.selectedID.map { String($0.uuidString.prefix(6)) } ?? "-")")
+        // 唤出同样常开（一次唤出一条）：点击日志要和它对着看才知道当时屏上是哪几张卡。
+        DebugLog.writeAlways("reveal shown=\(store.shown.prefix(5).map { String($0.id.uuidString.prefix(6)) }.joined(separator: ","))"
+                             + " selected=\(store.selectedID.map { String($0.uuidString.prefix(6)) } ?? "-")")
         // 自截图/探针调试时不抢键盘：否则前台 App 里正在打的字会落进搜索框。
         if ProcessInfo.processInfo.environment["CLIPLINE_SNAPSHOT"] == nil,
            ProcessInfo.processInfo.environment["CLIPLINE_NO_KEY"] == nil {
@@ -247,6 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard store.revealed else { return }
         DebugLog.write("tuck immediate=\(immediate)")
         store.revealed = false
+        store.hover(index: nil)
         removeOutsideMonitor()
         let board = activePanel   // 记住收起哪一块：等待期间换样式也把这块收干净
         let work = DispatchWorkItem { [weak self] in
